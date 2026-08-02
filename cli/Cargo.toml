@@ -1,0 +1,29 @@
+[package]
+name = "god3"
+version = "1.0.0"
+edition = "2021"
+description = "G0D-cli — multi-model coding agent CLI"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = "0.4"
+futures = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+crossterm = "0.28"
+ratatui = "0.29"
+async-trait = "0.1"
+uuid = { version = "1", features = ["v4"] }
+dirs = "5"
+toml = "0.8"
+anyhow = "1"
+
+xai-grok-providers = { path = "../grok-build/crates/codegen/xai-grok-providers" }
+xai-grok-godmode = { path = "../grok-build/crates/codegen/xai-grok-godmode" }
+
+[[bin]]
+name = "god3"
+path = "src/main.rs"

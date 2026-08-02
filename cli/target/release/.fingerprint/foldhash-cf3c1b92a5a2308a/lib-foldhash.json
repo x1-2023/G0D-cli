@@ -1,0 +1,1 @@
+{"rustc":3720210673988096810,"features":"[]","declared_features":"[\"default\", \"std\"]","target":18077926938045032029,"profile":2040997289075261528,"path":13115794829973573540,"deps":[],"local":[{"CheckDepInfo":{"dep_info":"release\\.fingerprint\\foldhash-cf3c1b92a5a2308a\\dep-lib-foldhash","checksum":false}}],"rustflags":[],"config":9396254390672932401,"compile_kind":0}
