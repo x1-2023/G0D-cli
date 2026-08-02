@@ -1,0 +1,21 @@
+[package]
+name = "xai-grok-godmode"
+version = "0.1.0"
+edition = "2024"
+description = "G0DM0D3 multi-model orchestration — GODMODE CLASSIC, ULTRAPLINIAN, Parseltongue, AutoTune"
+license = "Apache-2.0"
+
+[dependencies]
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+thiserror = "2"
+rand = "0.8"
+chrono = { version = "0.4", features = ["serde"] }
+futures = "0.3"
+uuid = { version = "1", features = ["v4"] }
+strsim = "0.11"
+
+xai-grok-providers = { path = "../xai-grok-providers" }
