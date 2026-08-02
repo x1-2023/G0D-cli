@@ -1,0 +1,19 @@
+[package]
+name = "xai-grok-providers"
+version = "0.1.0"
+edition = "2024"
+description = "Multi-provider inference abstraction for Grok Build — Grok, OpenRouter, Venice, OpenAI-compatible local"
+license = "Apache-2.0"
+
+[dependencies]
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["sync", "time"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+tracing = "0.1"
+futures = "0.3"
+thiserror = "2"
+url = "2"
+chrono = { version = "0.4", features = ["serde"] }
+bytes = "1"
