@@ -19,6 +19,8 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 crossterm = "0.28"
 ratatui = "0.29"
+reedline = "0.35"
+nu-ansi-term = "0.50"
 async-trait = "0.1"
 uuid = { version = "1", features = ["v4"] }
 dirs = "5"
