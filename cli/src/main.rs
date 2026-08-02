@@ -14,7 +14,7 @@ async fn main() -> anyhow::Result<()> {
     let headless = args.iter().any(|a| a == "--headless");
     let term = terminal::TerminalState::detect(headless, None);
 
-    // CLI flags mode (non-interactive) — exit early
+    // CLI flags mode (non-interactive) — exit early  
     if args.len() > 1 {
         return handle_cli_flags(&cfg, &args, &term).await;
     }
@@ -26,10 +26,7 @@ async fn main() -> anyhow::Result<()> {
 
     let result = run_repl(&mut cfg, &term).await;
 
-    // Restore terminal
-    if term.is_tty {
-        let _ = disable_raw_mode();
-    }
+    if term.is_tty { let _ = disable_raw_mode(); }
     println!();
     result
 }
@@ -42,6 +39,7 @@ async fn handle_cli_flags(cfg: &config::Config, args: &[String], term: &terminal
         "--config" => println!("{}", config::config_path().display()),
         "--models" => list_models(term),
         "-h"|"--help" => print_help(term),
+        "-V"|"--version" => println!("g0d v1.5.0"),
         "--language" => { if let Some(v) = args.get(2) { let mut c = cfg.clone(); c.set_lang(v); c.save(); println!("Language: {}", v); } }
         _ => { let q = args[1..].join(" "); cmd_chat(cfg, &q, term).await?; }
     }
