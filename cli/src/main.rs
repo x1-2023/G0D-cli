@@ -5,7 +5,13 @@ use std::io::{self, Write};
 use xai_grok_godmode::ultraplinian::UltraplinianTier;
 use xai_grok_godmode::parseltongue::{Parseltongue, Intensity};
 use xai_grok_godmode::config as gm_config;
-use xai_grok_godmode::lang::{LanguageContext, ResponseLanguage, SupportedLanguage};
+
+const C: &str = "\x1b[36m"; // cyan
+const G: &str = "\x1b[32m"; // green
+const Y: &str = "\x1b[33m"; // yellow
+const M: &str = "\x1b[35m"; // magenta
+const D: &str = "\x1b[90m"; // dim
+const R: &str = "\x1b[0m";  // reset
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -20,16 +26,8 @@ async fn main() -> anyhow::Result<()> {
             "--config" => println!("{}", config::config_path().display()),
             "--models" => list_models(),
             "-h" | "--help" | "/?" => print_help(),
-            "--language" => {
-                let val = args.get(2).cloned().unwrap_or("auto".into());
-                cfg.set_lang(&val); cfg.save();
-                println!("Language set to: {}", val);
-            }
-            "--ui-language" => {
-                let val = args.get(2).cloned().unwrap_or("en".into());
-                cfg.set_ui_lang(&val); cfg.save();
-                println!("UI language set to: {}", val);
-            }
+            "--language" => { let v = args.get(2).cloned().unwrap_or("auto".into()); cfg.set_lang(&v); cfg.save(); println!("Language: {}", v); }
+            "--ui-language" => { let v = args.get(2).cloned().unwrap_or("en".into()); cfg.set_ui_lang(&v); cfg.save(); println!("UI: {}", v); }
             _ => { let q = args[1..].join(" "); cmd_chat(&cfg, &q).await?; }
         }
         return Ok(());
@@ -41,79 +39,55 @@ async fn main() -> anyhow::Result<()> {
 
 fn banner() {
     let ctx = context::read_context();
-    println!("\x1b[35m  ▄▄▄▄  ██████  █████  \x1b[0m");
-    println!("\x1b[35m ██  ██ ██  ██ ██   ██ \x1b[0m");
-    println!("\x1b[35m ██ ▄██ ██  ██ ██   ██ \x1b[0m");
-    println!("\x1b[35m ██  ██ ██  ██ ██   ██ \x1b[0m");
-    println!("\x1b[35m  ████  ████   █████  \x1b[0m \x1b[90mv1.2 — coding agent\x1b[0m");
-    println!("\x1b[90m  {}\x1b[0m", truncate_path(&ctx.cwd, 50));
-    if ctx.project_type != "Unknown" {
-        println!("\x1b[90m  {}\x1b[0m", ctx.project_type);
-    }
+    println!("{M}  g0d{D} — AI coding agent for your project{R}");
+    println!("{D}  {}  |  {}{R}", ctx.cwd, ctx.project_type);
     if let Some(ref branch) = ctx.git_branch {
-        print!("\x1b[90m  {}\x1b[0m", branch);
-        if let Some(ref status) = ctx.git_status {
-            print!("\x1b[90m  [{}]\x1b[0m", status);
-        }
+        let status = ctx.git_status.as_deref().unwrap_or("");
+        print!("{D}  {}{R}", branch);
+        if !status.is_empty() { print!("{D}  [{}]{R}", status); }
         println!();
     }
     println!();
 }
 
-fn truncate_path(path: &str, max: usize) -> String {
-    if path.len() <= max { return path.to_string(); }
-    format!("...{}", &path[path.len().saturating_sub(max)..])
-}
-
-fn current_dir_name() -> String {
-    std::env::current_dir()
-        .ok()
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
-        .unwrap_or_else(|| ".".into())
-}
-
 fn print_help() {
-    println!(r#"g0d — G0DM0D3 Multi-model Coding Agent
+    println!(r#"g0d — AI coding agent
 
-USAGE:
-  g0d                 Interactive REPL
-  g0d "query"         Single-shot chat
-  g0d -g "query"      GODMODE CLASSIC (5 candidates)
-  g0d -p "query"      Parseltongue obfuscation
-  g0d -u "query"      ULTRAPLINIAN race
-  g0d --config        Show config path
-  g0d --models        List ULTRAPLINIAN tiers
+  g0d                Chat with your codebase
+  g0d "query"        Quick question  
+  g0d -g "query"     5 models racing (GODMODE)
+  g0d -u "query"     Up to 60 models racing
 
-SETUP (REPL commands):
-  /provider key openrouter sk-or-v1-...    Set OpenRouter key
-  /provider key venice vnc-...             Set Venice key
-  /provider default openrouter             Switch to OpenRouter
-  /model openrouter:anthropic/claude-sonnet-4.6
+Start here:
+  1. Get key: https://openrouter.ai/keys
+  2. g0d
+  3. /key sk-or-v1-...
+  4. Ask anything
 "#);
 }
 
 async fn repl(cfg: &mut config::Config, mode: &str) -> anyhow::Result<()> {
     let mut mode = mode.to_string();
+    let has_key = cfg.get_api_key().is_ok();
 
-    if cfg.active_provider().api_key.is_none() {
-        let p = cfg.active_provider();
-        let env = p.key_env.as_deref().unwrap_or("API_KEY");
-        if std::env::var(env).is_err() {
-            println!("\x1b[33m⚠ No API key for '{}'. Set via:\x1b[0m", p.id);
-            println!("\x1b[90m  /provider key {} <your-key>\x1b[0m", p.id);
-            println!("\x1b[90m  or set {} env var\x1b[0m\n", env);
-        }
+    if !has_key {
+        println!("{Y}  First time? Let's set up your API key.{R}");
+        println!("{D}  1. Get free key at {C}https://openrouter.ai/keys{R}");
+        println!("{D}  2. Paste it here: {C}/key sk-or-v1-...{R}");
+        println!("{D}  3. Then just type your question!{R}\n");
+    } else {
+        println!("{D}  Ready. Type a question or /help to see commands.{R}\n");
     }
 
     loop {
         let cwd_name = current_dir_name();
-        let prompt = match mode.as_str() {
-            "godmode" => format!("\x1b[35m{g}\x1b[33m godmode\x1b[0m \x1b[35m›\x1b[0m ", g = cfg.active_provider_id()),
-            "parseltongue" => format!("\x1b[35m{g}\x1b[32m snake\x1b[0m \x1b[35m›\x1b[0m ", g = cfg.active_provider_id()),
-            "ultra" => format!("\x1b[35m{g}\x1b[36m ultra\x1b[0m \x1b[35m›\x1b[0m ", g = cfg.active_provider_id()),
-            _ => format!("\x1b[90m{}\x1b[0m \x1b[35m›\x1b[0m ", cwd_name),
+        let label = match mode.as_str() {
+            "godmode" => format!("{C}godmode{R}"),
+            "parseltongue" => format!("{G}snake{R}"),
+            "ultra" => format!("{C}ultra{R}"),
+            _ => cwd_name,
         };
-        print!("{}", prompt);
+        print!("{D}{}{R} {M}>{R} ", label);
         io::stdout().flush()?;
 
         let mut input = String::new();
@@ -124,154 +98,238 @@ async fn repl(cfg: &mut config::Config, mode: &str) -> anyhow::Result<()> {
         if input.starts_with('/') {
             let parts: Vec<&str> = input.splitn(4, ' ').collect();
             match parts[0] {
-                "/exit" | "/quit" => { println!("\x1b[35m 🖤\x1b[0m\n"); break; }
+                "/exit" | "/quit" => { println!("{M}bye{R}\n"); break; }
                 "/help" => print_slash_help(),
+                "/key" => cmd_key(cfg, parts.get(1).copied()),
                 "/provider" => cmd_provider(cfg, parts.get(1).copied(), parts.get(2).copied(), parts.get(3).copied()),
                 "/model" => cmd_model(cfg, parts.get(1).copied()),
                 "/providers" => cmd_providers_list(cfg),
                 "/status" => cmd_status(cfg, &mode),
-                "/chat" => { mode = "chat".into(); println!("\x1b[32m  ✓ Chat\x1b[0m\n"); }
-                "/godmode" => { mode = "godmode".into(); println!("\x1b[33m  🔥 GODMODE CLASSIC\x1b[0m\n"); }
-                "/snake" => { mode = "parseltongue".into(); println!("\x1b[32m  🐍 Parseltongue\x1b[0m\n"); }
-                "/ultra" => { mode = "ultra".into(); println!("\x1b[36m  🌋 ULTRAPLINIAN\x1b[0m\n"); }
+                "/chat" => { mode = "chat".into(); println!("{G}  Chat mode{R}\n"); }
+                "/godmode" => { mode = "godmode".into(); println!("{Y}  GODMODE — 5 models racing{R}\n"); }
+                "/snake" => { mode = "parseltongue".into(); println!("{G}  Parseltongue{R}\n"); }
+                "/ultra" => { mode = "ultra".into(); println!("{C}  ULTRAPLINIAN{R}\n"); }
                 "/language" => cmd_language(cfg, parts.get(1).copied()),
-                _ => println!("\x1b[90m  Unknown. /help\x1b[0m\n"),
+                cmd => {
+                    println!("{Y}  Unknown: {cmd}{R}");
+                    suggest_command(cmd);
+                    println!();
+                }
             }
             continue;
         }
 
         let key = match cfg.get_api_key() {
-            Ok(k) => k, Err(e) => { println!("\x1b[33m  {}\x1b[0m\n", e); continue; }
+            Ok(k) => k,
+            Err(e) => {
+                println!("{Y}  No API key. {D}/key sk-or-v1-...{R}\n");
+                println!("{D}  Get one: {C}https://openrouter.ai/keys{R}\n");
+                continue;
+            }
         };
         let endpoint = cfg.get_endpoint();
 
-        print!("\x1b[90m{}\x1b[0m\n", "─".repeat(60));
+        println!("{D}──────────────────────────────────────────────────{R}");
         match mode.as_str() {
             "godmode" => { let _ = run_godmode(&key, &endpoint, &input).await; }
             "parseltongue" => { let _ = run_parseltongue_repl(&key, &endpoint, &input).await; }
             "ultra" => { let _ = run_ultra(&key, &endpoint, &input, "fast").await; }
             _ => { let _ = run_chat(&key, &endpoint, &input, &cfg.default_model()).await; }
         }
-        println!("\x1b[90m{}\x1b[0m", "─".repeat(60));
+        println!("{D}──────────────────────────────────────────────────{R}");
     }
     Ok(())
 }
 
-fn print_slash_help() {
-    println!(r#"
-\x1b[36mCommands:\x1b[0m
-  /chat | /godmode | /snake | /ultra    Switch mode
-  /provider key <id> <api-key>     Set API key for a provider
-  /provider add <id> <endpoint>    Add custom provider
-  /provider default <id>           Set default provider
-  /providers                       List all providers + keys
-  /model <provider:model/id>       Set active model
-  /status                          Show current config
-  /exit                            Quit
+fn suggest_command(input: &str) {
+    let suggestions: Vec<&str> = [
+        "/key", "/provider", "/model", "/providers", "/status",
+        "/chat", "/godmode", "/snake", "/ultra", "/language",
+        "/help", "/exit",
+    ].iter().filter(|c| {
+        let d = str_distance(c, input);
+        d < 4 || c.contains(input) || input.contains(*c)
+    }).copied().take(3).collect();
 
-\x1b[36mSetup examples:\x1b[0m
-  /provider key openrouter sk-or-v1-abcdef     OpenRouter
-  /provider key venice vnc-xxxxx               Venice
-  /provider key grok xai-xxxxx                 Grok
-  /provider add ollama http://localhost:11434   Local Ollama
-  /provider key ollama ollama                   (no key needed for local)
-  /provider default openrouter                  Use OpenRouter
-  /model openrouter:anthropic/claude-sonnet-4.6
-"#);
+    if suggestions.is_empty() {
+        println!("{D}  Try {C}/help{D} to see all commands{R}");
+    } else {
+        println!("{D}  Did you mean: {C}{}?{R}", suggestions.join(", "));
+    }
+}
+
+fn str_distance(a: &str, b: &str) -> usize {
+    let a = a.as_bytes(); let b = b.as_bytes();
+    let n = a.len(); let m = b.len();
+    if n == 0 { return m; } if m == 0 { return n; }
+    let mut prev: Vec<usize> = (0..=m).collect();
+    let mut curr = vec![0; m + 1];
+    for i in 1..=n {
+        curr[0] = i;
+        for j in 1..=m {
+            let cost = if a[i-1] == b[j-1] { 0 } else { 1 };
+            curr[j] = (prev[j] + 1).min(curr[j-1] + 1).min(prev[j-1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[m]
+}
+
+fn cmd_key(cfg: &mut config::Config, arg: Option<&str>) {
+    if let Some(key) = arg {
+        cfg.set_provider_key(&cfg.active_provider_id(), key);
+        cfg.save();
+        println!("{G}  Key saved! Type your question.{R}\n");
+    } else {
+        println!("{D}  Paste your OpenRouter API key:{R}");
+        println!("{D}  {C}/key sk-or-v1-...{R}");
+        println!("{D}  Get one at {C}https://openrouter.ai/keys{R}\n");
+    }
+}
+
+fn print_slash_help() {
+    println!();
+    println!("{C}  Essentials{R}");
+    println!("{D}  {C}/key <key>                {D}Set API key{R}");
+    println!("{D}  {C}/model <provider:model>   {D}Change AI model{R}");
+    println!("{D}  {C}/providers                {D}Show all providers{R}");
+    println!("{D}  {C}/status                   {D}Current settings{R}");
+    println!();
+    println!("{C}  Modes{R}");
+    println!("{D}  {C}/chat                    {D}Normal chat (default){R}");
+    println!("{D}  {C}/godmode                 {D}5 models race, pick best answer{R}");
+    println!("{D}  {C}/snake                   {D}Parseltongue text obfuscation{R}");
+    println!("{D}  {C}/ultra                   {D}Up to 60 models race{R}");
+    println!();
+    println!("{C}  Language{R}");
+    println!("{D}  {C}/language vi             {D}Reply in Vietnamese{R}");
+    println!("{D}  {C}/language en             {D}Reply in English{R}");
+    println!("{D}  {C}/language auto           {D}Auto-detect{R}");
+    println!();
+    println!("{D}  {C}/exit                    {D}Quit{R}");
+    println!();
 }
 
 fn cmd_provider(cfg: &mut config::Config, sub: Option<&str>, arg1: Option<&str>, arg2: Option<&str>) {
     match sub {
-        Some("key") => {
-            match (arg1, arg2) {
-                (Some(id), Some(key)) => {
-                    cfg.set_provider_key(id, key);
-                    cfg.save();
-                    println!("\x1b[32m  ✓ API key set for '{}'\x1b[0m\n", id);
-                }
-                _ => {
-                    println!("\x1b[33m  Usage: /provider key <provider-id> <api-key>\x1b[0m");
-                    println!("\x1b[90m  Examples:\x1b[0m");
-                    println!("\x1b[90m    /provider key openrouter sk-or-v1-...\x1b[0m");
-                    println!("\x1b[90m    /provider key venice vnc-...\x1b[0m");
-                    println!("\x1b[90m    /provider key ollama ollama\x1b[0m\n");
-                }
+        Some("key") => match (arg1, arg2) {
+            (Some(id), Some(key)) => { cfg.set_provider_key(id, key); cfg.save(); println!("{G}  Key saved for '{id}'{R}\n"); }
+            _ => {
+                println!("{D}  Set API key for a provider:{R}");
+                println!("{D}  {C}/provider key openrouter sk-or-v1-...{R}");
+                println!("{D}  {C}/provider key venice vnc-...{R}\n");
             }
         }
-        Some("add") => {
-            match (arg1, arg2) {
-                (Some(id), Some(endpoint)) => {
-                    let key_env = if endpoint.contains("localhost") { None } else { Some(format!("{}_API_KEY", id.to_uppercase())) };
-                    cfg.add_provider(id.to_string(), endpoint.to_string(), key_env);
-                    cfg.save();
-                    println!("\x1b[32m  ✓ Provider '{}' added ({})\x1b[0m\n", id, endpoint);
-                }
-                _ => println!("\x1b[33m  Usage: /provider add <id> <endpoint>\x1b[0m\n"),
+        Some("add") => match (arg1, arg2) {
+            (Some(id), Some(endpoint)) => {
+                cfg.add_provider(id.to_string(), endpoint.to_string(), None); cfg.save();
+                println!("{G}  Added provider '{id}' → {endpoint}{R}\n");
             }
+            _ => println!("{D}  {C}/provider add <name> <url>{D}  e.g. /provider add ollama http://localhost:11434/v1{R}\n"),
         }
-        Some("default") => {
-            if let Some(id) = arg1 {
-                cfg.set_default_provider(id);
-                cfg.save();
-                println!("\x1b[32m  ✓ Default provider = '{}'\x1b[0m\n", id);
-            } else {
-                println!("\x1b[36m  Default: {}\x1b[0m\n", cfg.active_provider_id());
-            }
+        Some("default") => if let Some(id) = arg1 {
+            cfg.set_default_provider(id); cfg.save(); println!("{G}  Now using '{id}'{R}\n");
+        } else {
+            println!("{D}  Current: {C}{}{R}\n", cfg.active_provider_id());
         }
-        Some("rm") | Some("remove") => {
-            if let Some(id) = arg1 {
-                cfg.remove_provider(id); cfg.save();
-                println!("\x1b[32m  ✓ Removed '{}'\x1b[0m\n", id);
-            }
-        }
+        Some("rm") | Some("remove") => if let Some(id) = arg1 {
+            cfg.remove_provider(id); cfg.save(); println!("{G}  Removed '{id}'{R}\n");
+        } else { println!("{D}  {C}/provider rm <name>{R}\n"); }
         _ => {
-            println!("\x1b[33m  /provider <key|add|default|rm> [args]\x1b[0m\n");
+            println!("{D}  Manage providers:{R}\n");
+            println!("{D}  {C}/provider key <name> <key>     {D}Add API key{R}");
+            println!("{D}  {C}/provider add <name> <url>     {D}Add custom provider{R}");
+            println!("{D}  {C}/provider default <name>        {D}Switch provider{R}");
+            println!("{D}  {C}/providers                     {D}List all{R}\n");
+            cmd_providers_mini(cfg);
         }
     }
 }
 
+fn cmd_providers_mini(cfg: &config::Config) {
+    println!("{D}  Available:{R}");
+    for p in &cfg.providers {
+        if !p.enabled { continue; }
+        let star = if Some(&p.id) == cfg.default_provider.as_ref() { "*" } else { " " };
+        let has_key = p.api_key.as_ref().map_or(false, |k| !k.is_empty())
+            || p.key_env.as_ref().and_then(|e| std::env::var(e).ok()).map_or(false, |k| !k.is_empty());
+        let dot = if has_key { "{G}●{R}" } else { "{D}○{R}" };
+        println!("{D}    {dot} {star} {}{R}", p.id);
+    }
+    println!("{D}  * = current, {G}●{D} = key set{R}\n");
+}
+
 fn cmd_model(cfg: &mut config::Config, arg: Option<&str>) {
     match arg {
-        Some(m) if !m.is_empty() => {
-            cfg.set_model(m); cfg.save();
-            println!("\x1b[32m  ✓ Model = '{}'\x1b[0m\n", m);
-        }
+        Some(m) if !m.is_empty() => { cfg.set_model(m); cfg.save(); println!("{G}  Model: {m}{R}\n"); }
         _ => {
-            println!("\x1b[36m  Model: {}\x1b[0m", cfg.default_model());
-            println!("\x1b[90m  Usage: /model <provider:model/id>\x1b[0m");
-            println!("\x1b[90m  /model openrouter:openai/gpt-5.6\x1b[0m");
-            println!("\x1b[90m  /model local:qwen3-coder:30b\x1b[0m\n");
+            println!("{D}  Current: {C}{}{R}", cfg.default_model());
+            println!("{D}  Change: {C}/model openrouter:anthropic/claude-sonnet-4.6{R}");
+            println!("{D}  Popular:{R}");
+            println!("{D}    {C}anthropic/claude-sonnet-4.6{D} — best all-round{R}");
+            println!("{D}    {C}openai/gpt-5.6{D}            — strong coding{R}");
+            println!("{D}    {C}google/gemini-2.5-pro{D}      — reasoning{R}");
+            println!("{D}    {C}deepseek/deepseek-chat{D}     — fast & cheap{R}");
+            println!();
         }
     }
 }
 
 fn cmd_providers_list(cfg: &config::Config) {
-    println!("\n\x1b[36m  Providers:\x1b[0m");
-    println!("\x1b[90m  {:<14} {:<7} {:<30} {:12}\x1b[0m", "ID", "Type", "Endpoint", "Key");
-    println!("\x1b[90m  {:-<14} {:-<7} {:-<30} {:-<12}\x1b[0m", "", "", "", "");
-
+    println!();
     for p in &cfg.providers {
         if !p.enabled { continue; }
-        let marker = if Some(&p.id) == cfg.default_provider.as_ref() { "\x1b[32m*\x1b[0m" } else { " " };
-        let ptype = if p.is_local { "\x1b[32mlocal\x1b[0m" } else { "\x1b[90mremote\x1b[0m" };
-        let has_key = p.api_key.as_ref().filter(|k| !k.is_empty()).is_some()
-            || p.key_env.as_ref().and_then(|e| std::env::var(e).ok()).filter(|k| !k.is_empty()).is_some();
-        let key_status = if has_key { "\x1b[32mset\x1b[0m" } else { "\x1b[90m-\x1b[0m" };
-        println!("  {}{:<13} {}  {:<30} {}", marker, p.id, ptype, p.endpoint, key_status);
+        let star = if Some(&p.id) == cfg.default_provider.as_ref() { "*" } else { " " };
+        let has_key = p.api_key.as_ref().map_or(false, |k| !k.is_empty())
+            || p.key_env.as_ref().and_then(|e| std::env::var(e).ok()).map_or(false, |k| !k.is_empty());
+        let key_status = if has_key { format!("{G}set{R}") } else { format!("{D}no key{R}") };
+        let ptype = if p.is_local { format!("{G}local{R}") } else { format!("{D}remote{R}") };
+        println!("{D}  {star} {C}{:<14}{R} {ptype}  {key_status}  {D}{}{R}", p.id, p.endpoint);
     }
-    println!("\x1b[90m  * = current, /provider default <id> to switch\x1b[0m\n");
+    println!("{D}  * = current, {C}/provider default <name>{D} to switch{R}\n");
 }
 
 fn cmd_status(cfg: &config::Config, mode: &str) {
     let p = cfg.active_provider();
     let has_key = cfg.get_api_key().is_ok();
-    println!("\n\x1b[36m  Status:\x1b[0m");
-    println!("\x1b[90m  Mode:     {}\x1b[0m", mode);
-    println!("\x1b[90m  Provider: {}\x1b[0m", p.id);
-    println!("\x1b[90m  Endpoint: {}\x1b[0m", p.endpoint);
-    println!("\x1b[90m  Model:    {}\x1b[0m", cfg.default_model());
-    println!("\x1b[90m  Key:      {}\x1b[0m", if has_key { "\x1b[32mset\x1b[0m" } else { "\x1b[33mnot set\x1b[0m" });
-    println!("\x1b[90m  Config:   {}\x1b[0m\n", config::config_path().display());
+    let lang_label = match cfg.get_lang() { "vi" => "VN", "en" => "EN", _ => "auto", };
+    println!();
+    println!("{D}  Mode:     {C}{mode}{R}");
+    println!("{D}  Provider: {C}{}{D}  →  {}{R}", p.id, p.endpoint);
+    println!("{D}  Model:    {C}{}{R}", cfg.default_model());
+    println!("{D}  Key:      {}{R}", if has_key { format!("{G}set{R}") } else { format!("{Y}not set{R}") });
+    println!("{D}  Language: {C}{}{R}", lang_label);
+    println!("{D}  Config:   {C}{}{R}", config::config_path().display());
+    println!();
+}
+
+fn cmd_language(cfg: &mut config::Config, arg: Option<&str>) {
+    match arg {
+        Some("vi") => { cfg.set_lang("vi"); cfg.save(); println!("{G}  Reply in Vietnamese{R}\n"); }
+        Some("en") => { cfg.set_lang("en"); cfg.save(); println!("{G}  Reply in English{R}\n"); }
+        Some("auto") => { cfg.set_lang("auto"); cfg.save(); println!("{G}  Auto-detect language{R}\n"); }
+        None => {
+            let lang = match cfg.get_lang() { "vi" => "Vietnamese", "en" => "English", _ => "Auto-detect", };
+            println!("{D}  Language: {C}{}{R}", lang);
+            println!("{D}  {C}/language vi{D} | {C}en{D} | {C}auto{R}\n");
+        }
+        _ => println!("{D}  {C}/language vi{D} | {C}en{D} | {C}auto{R}\n"),
+    }
+}
+
+fn current_dir_name() -> String {
+    std::env::current_dir().ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+        .unwrap_or_else(|| ".".into())
+}
+
+fn list_models() {
+    for tier in [UltraplinianTier::Fast, UltraplinianTier::Standard, UltraplinianTier::Smart, UltraplinianTier::Power, UltraplinianTier::Ultra] {
+        let models = xai_grok_godmode::tier_models(&tier);
+        println!("{}: {} models", tier.label(), models.len());
+        for m in &models { println!("  {}", m); }
+        println!();
+    }
 }
 
 async fn cmd_chat(cfg: &config::Config, query: &str) -> anyhow::Result<()> {
@@ -289,85 +347,44 @@ async fn cmd_godmode(cfg: &config::Config, query: &str) -> anyhow::Result<()> {
 async fn cmd_parseltongue(cfg: &config::Config, query: &str) -> anyhow::Result<()> {
     let key = cfg.get_api_key()?;
     let endpoint = cfg.get_endpoint();
-    run_parseltongue_repl(&key, &endpoint, query).await;
+    let _ = run_parseltongue_repl(&key, &endpoint, query).await;
     Ok(())
 }
 
 async fn cmd_ultra(cfg: &config::Config, query: &str, tier: &str) -> anyhow::Result<()> {
-    let key = cfg.get_api_key()?;
-    let endpoint = cfg.get_endpoint();
+    let key = cfg.get_api_key()?; let endpoint = cfg.get_endpoint();
     run_ultra(&key, &endpoint, query, tier).await
-}
-
-fn cmd_language(cfg: &mut config::Config, arg: Option<&str>) {
-    match arg {
-        Some("auto") | Some("vi") | Some("en") => {
-            cfg.set_lang(arg.unwrap()); cfg.save();
-            let label = match arg.unwrap() { "vi" => "tiếng Việt", "en" => "English", _ => "auto (tự động)", };
-            println!("\x1b[32m  ✓ Ngôn ngữ: {}\x1b[0m\n", label);
-        }
-        None => {
-            let lang = cfg.get_lang();
-            let lang_label = match lang { "vi" => "tiếng Việt", "en" => "English", _ => "auto (tự động)", };
-            let ui = cfg.get_ui_lang();
-            println!("\x1b[36m  Ngôn ngữ phản hồi: {}\x1b[0m", lang_label);
-            println!("\x1b[36m  Ngôn ngữ giao diện: {}\x1b[0m", if ui == "vi" { "Tiếng Việt" } else { "English" });
-            println!("\x1b[90m  /language auto|vi|en để đổi\x1b[0m\n");
-        }
-        _ => println!("\x1b[33m  /language auto|vi|en\x1b[0m\n"),
-    }
-}
-
-fn list_models() {
-    for tier in [UltraplinianTier::Fast, UltraplinianTier::Standard, UltraplinianTier::Smart, UltraplinianTier::Power, UltraplinianTier::Ultra] {
-        let models = xai_grok_godmode::tier_models(&tier);
-        println!("{}: {} models", tier.label(), models.len());
-        for m in &models { println!("  {}", m); }
-        println!();
-    }
 }
 
 async fn run_chat(key: &str, endpoint: &str, query: &str, model: &str) -> anyhow::Result<()> {
     let client = reqwest::Client::new();
     let url = format!("{}/chat/completions", endpoint.trim_end_matches('/'));
-    let ctx_summary = context::read_context();
-    let system_msg = format!(
-        "You are g0d, an AI coding assistant. You help with code in the current project.\n\n{}\nFollow the user's instructions. Be concise but thorough. Use file paths and code references when relevant.",
-        context::context_summary(&ctx_summary),
+    let ctx = context::read_context();
+    let system = format!(
+        "You are g0d, a coding assistant. You help with code in the current project.\n\n{}\nBe concise. Use file paths when relevant.",
+        context::context_summary(&ctx),
     );
     let body = serde_json::json!({
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_msg},
-            {"role": "user", "content": query}
-        ],
+        "model": model, "messages": [{"role":"system","content":system},{"role":"user","content":query}],
         "stream": true, "temperature": 0.7, "max_tokens": 8192,
     });
-    let resp = client.post(&url)
-        .header("Authorization", format!("Bearer {}", key))
-        .header("Content-Type", "application/json")
-        .json(&body).send().await?;
+    let resp = client.post(&url).header("Authorization", format!("Bearer {}", key))
+        .header("Content-Type", "application/json").json(&body).send().await?;
 
-    let status = resp.status();
-    if !status.is_success() {
-        let err = resp.text().await.unwrap_or_default();
-        anyhow::bail!("HTTP {}: {}", status, err);
+    if !resp.status().is_success() {
+        let s = resp.status(); let e = resp.text().await.unwrap_or_default();
+        anyhow::bail!("HTTP {}: {}", s, e);
     }
-
     let mut stream = resp.bytes_stream();
     use futures::StreamExt;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk?;
-        let text = String::from_utf8_lossy(&chunk);
-        for line in text.lines() {
+        for line in String::from_utf8_lossy(&chunk).lines() {
             let line = line.trim();
             if !line.starts_with("data: ") { continue; }
-            let data = &line[6..];
-            if data == "[DONE]" { continue; }
-            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
-                if let Some(content) = parsed["choices"][0]["delta"]["content"].as_str() {
-                    print!("{}", content); io::stdout().flush()?;
-                }
+            if &line[6..] == "[DONE]" { continue; }
+            if let Ok(p) = serde_json::from_str::<serde_json::Value>(&line[6..]) {
+                if let Some(c) = p["choices"][0]["delta"]["content"].as_str() { print!("{}", c); io::stdout().flush()?; }
             }
         }
     }
@@ -379,9 +396,10 @@ async fn run_parseltongue_repl(key: &str, endpoint: &str, query: &str) -> anyhow
     let p = Parseltongue::new();
     for (label, intensity) in [("Light", Intensity::Light), ("Standard", Intensity::Standard), ("Heavy", Intensity::Heavy)] {
         let r = p.transform(query, intensity, &[]);
-        println!("\x1b[32m[{}]\x1b[0m {} | {}", label, r.applied_transformations.len(), r.transformed);
+        if r.applied_transformations.len() > 0 {
+            println!("{G}[{label}]{R} {}", r.transformed);
+        }
     }
-    println!();
     run_chat(key, endpoint, query, "anthropic/claude-sonnet-4").await
 }
 
@@ -389,7 +407,7 @@ async fn run_godmode(key: &str, endpoint: &str, query: &str) -> anyhow::Result<(
     let client = reqwest::Client::new();
     let presets = gm_config::default_presets();
     let url = format!("{}/chat/completions", endpoint.trim_end_matches('/'));
-    println!("\x1b[33m🔥 GODMODE CLASSIC — 5 candidates\x1b[0m\n");
+    println!("{Y}  GODMODE — 5 models{R}\n");
 
     let mut tasks = Vec::new();
     for preset in &presets {
@@ -399,8 +417,8 @@ async fn run_godmode(key: &str, endpoint: &str, query: &str) -> anyhow::Result<(
             let body = serde_json::json!({
                 "model": p.model,
                 "messages": [
-                    {"role": "system", "content": format!("You are {}: {}", p.persona.name, p.persona.role)},
-                    {"role": "user", "content": q},
+                    {"role":"system","content": format!("You are {}: {}", p.persona.name, p.persona.role)},
+                    {"role":"user","content": q},
                 ],
                 "temperature": p.temperature, "max_tokens": 4096,
             });
@@ -416,12 +434,11 @@ async fn run_godmode(key: &str, endpoint: &str, query: &str) -> anyhow::Result<(
             }
         }));
     }
-
     let results = futures::future::join_all(tasks).await;
     for r in &results {
         if let Ok(Ok((p, content))) = r {
             let t: String = content.chars().take(200).collect();
-            println!("\x1b[36m  {} ({})\x1b[0m\n    {}\n", p.persona.name, p.model, t.replace('\n', "\n    "));
+            println!("{C}  {}{R} ({D}{}{R})\n    {}\n", p.persona.name, p.model, t.replace('\n', "\n    "));
         }
     }
     Ok(())
@@ -436,7 +453,7 @@ async fn run_ultra(key: &str, endpoint: &str, query: &str, tier_name: &str) -> a
     let models = xai_grok_godmode::tier_models(&tier);
     let client = reqwest::Client::new();
     let url = format!("{}/chat/completions", endpoint.trim_end_matches('/'));
-    println!("\x1b[36m🌋 {} — {} models\x1b[0m\n", tier.label(), models.len());
+    println!("{C}  ULTRAPLINIAN {}{R} — {} models\n", tier.label(), models.len());
 
     let show = models.len().min(8);
     let mut tasks = Vec::new();
@@ -444,11 +461,24 @@ async fn run_ultra(key: &str, endpoint: &str, query: &str, tier_name: &str) -> a
         let c = client.clone(); let k = key.to_string(); let q = query.to_string();
         let m = m.clone(); let u = url.clone();
         tasks.push(tokio::spawn(async move {
-            let body = serde_json::json!({"model": m, "messages": [{"role": "user", "content": q}], "temperature": 0.3, "max_tokens": 2048});
-            let r = c.post(&u).header("Authorization", format!("Bearer {}", k)).header("Content-Type", "application/json").json(&body).send().await;
-            match r { Ok(resp) if resp.status().is_success() => { let json: serde_json::Value = resp.json().await.unwrap_or_default(); Ok((m, json["choices"][0]["message"]["content"].as_str().unwrap_or("").to_string())) } Ok(resp) => Err(format!("HTTP {}", resp.status())), Err(e) => Err(format!("{}", e)), }
+            let body = serde_json::json!({"model":m,"messages":[{"role":"user","content":q}],"temperature":0.3,"max_tokens":2048});
+            let r = c.post(&u).header("Authorization", format!("Bearer {}", k))
+                .header("Content-Type", "application/json").json(&body).send().await;
+            match r {
+                Ok(resp) if resp.status().is_success() => {
+                    let json: serde_json::Value = resp.json().await.unwrap_or_default();
+                    Ok((m, json["choices"][0]["message"]["content"].as_str().unwrap_or("").to_string()))
+                }
+                Ok(resp) => Err(format!("HTTP {}", resp.status())),
+                Err(e) => Err(format!("{}", e)),
+            }
         }));
     }
-    for r in futures::future::join_all(tasks).await { if let Ok(Ok((m, content))) = r { let t: String = content.chars().take(200).collect(); println!("\x1b[36m  {}\x1b[0m\n    {}\n", m, t.replace('\n', "\n    ")); } }
+    for r in futures::future::join_all(tasks).await {
+        if let Ok(Ok((m, content))) = r {
+            let t: String = content.chars().take(200).collect();
+            println!("{C}  {}{R}\n    {}\n", m, t.replace('\n', "\n    "));
+        }
+    }
     Ok(())
 }
