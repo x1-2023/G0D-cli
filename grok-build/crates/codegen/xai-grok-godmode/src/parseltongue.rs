@@ -89,7 +89,7 @@ const DEFAULT_TRIGGERS: &[&str] = &[
     "ignore", "disregard", "forget", "pretend", "roleplay",
 ];
 
-const TRANSFORM_NAMES: &[&str] = &[
+pub const TRANSFORM_NAMES: &[&str] = &[
    "basic-leetspeak", "extended-leetspeak", "unicode-homoglyph",
    "mixed-script", "fullwidth-unicode", "circled-characters",
    "small-cap-characters", "superscript", "subscript",
