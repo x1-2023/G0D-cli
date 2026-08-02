@@ -1,4 +1,5 @@
 mod config;
+mod context;
 
 use std::io::{self, Write};
 use xai_grok_godmode::ultraplinian::UltraplinianTier;
@@ -39,11 +40,36 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn banner() {
+    let ctx = context::read_context();
     println!("\x1b[35m  ▄▄▄▄  ██████  █████  \x1b[0m");
     println!("\x1b[35m ██  ██ ██  ██ ██   ██ \x1b[0m");
     println!("\x1b[35m ██ ▄██ ██  ██ ██   ██ \x1b[0m");
     println!("\x1b[35m ██  ██ ██  ██ ██   ██ \x1b[0m");
-    println!("\x1b[35m  ████  ████   █████  \x1b[0m \x1b[90mv1.1 — multi-model coding agent\x1b[0m\n");
+    println!("\x1b[35m  ████  ████   █████  \x1b[0m \x1b[90mv1.2 — coding agent\x1b[0m");
+    println!("\x1b[90m  {}\x1b[0m", truncate_path(&ctx.cwd, 50));
+    if ctx.project_type != "Unknown" {
+        println!("\x1b[90m  {}\x1b[0m", ctx.project_type);
+    }
+    if let Some(ref branch) = ctx.git_branch {
+        print!("\x1b[90m  {}\x1b[0m", branch);
+        if let Some(ref status) = ctx.git_status {
+            print!("\x1b[90m  [{}]\x1b[0m", status);
+        }
+        println!();
+    }
+    println!();
+}
+
+fn truncate_path(path: &str, max: usize) -> String {
+    if path.len() <= max { return path.to_string(); }
+    format!("...{}", &path[path.len().saturating_sub(max)..])
+}
+
+fn current_dir_name() -> String {
+    std::env::current_dir()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+        .unwrap_or_else(|| ".".into())
 }
 
 fn print_help() {
@@ -80,11 +106,12 @@ async fn repl(cfg: &mut config::Config, mode: &str) -> anyhow::Result<()> {
     }
 
     loop {
+        let cwd_name = current_dir_name();
         let prompt = match mode.as_str() {
-            "godmode" => format!("\x1b[35m{}\x1b[33m godmode\x1b[0m \x1b[35m›\x1b[0m ", cfg.active_provider_id()),
-            "parseltongue" => format!("\x1b[35m{}\x1b[32m snake\x1b[0m \x1b[35m›\x1b[0m ", cfg.active_provider_id()),
-            "ultra" => format!("\x1b[35m{}\x1b[36m ultra\x1b[0m \x1b[35m›\x1b[0m ", cfg.active_provider_id()),
-            _ => format!("\x1b[90m{}\x1b[0m \x1b[35m›\x1b[0m ", cfg.active_provider_id()),
+            "godmode" => format!("\x1b[35m{g}\x1b[33m godmode\x1b[0m \x1b[35m›\x1b[0m ", g = cfg.active_provider_id()),
+            "parseltongue" => format!("\x1b[35m{g}\x1b[32m snake\x1b[0m \x1b[35m›\x1b[0m ", g = cfg.active_provider_id()),
+            "ultra" => format!("\x1b[35m{g}\x1b[36m ultra\x1b[0m \x1b[35m›\x1b[0m ", g = cfg.active_provider_id()),
+            _ => format!("\x1b[90m{}\x1b[0m \x1b[35m›\x1b[0m ", cwd_name),
         };
         print!("{}", prompt);
         io::stdout().flush()?;
@@ -303,8 +330,17 @@ fn list_models() {
 async fn run_chat(key: &str, endpoint: &str, query: &str, model: &str) -> anyhow::Result<()> {
     let client = reqwest::Client::new();
     let url = format!("{}/chat/completions", endpoint.trim_end_matches('/'));
+    let ctx_summary = context::read_context();
+    let system_msg = format!(
+        "You are g0d, an AI coding assistant. You help with code in the current project.\n\n{}\nFollow the user's instructions. Be concise but thorough. Use file paths and code references when relevant.",
+        context::context_summary(&ctx_summary),
+    );
     let body = serde_json::json!({
-        "model": model, "messages": [{"role": "user", "content": query}],
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": query}
+        ],
         "stream": true, "temperature": 0.7, "max_tokens": 8192,
     });
     let resp = client.post(&url)

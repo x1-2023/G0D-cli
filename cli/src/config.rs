@@ -40,6 +40,8 @@ impl Config {
             default_provider: Some("openrouter".into()),
             default_model: Some("anthropic/claude-sonnet-4".into()),
             providers: vec![],
+            lang: None,
+            ui_lang: None,
         };
         cfg.ensure_builtins();
         cfg.save();
