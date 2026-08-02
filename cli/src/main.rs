@@ -4,6 +4,7 @@ use std::io::{self, Write};
 use xai_grok_godmode::ultraplinian::UltraplinianTier;
 use xai_grok_godmode::parseltongue::{Parseltongue, Intensity};
 use xai_grok_godmode::config as gm_config;
+use xai_grok_godmode::lang::{LanguageContext, ResponseLanguage, SupportedLanguage};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -18,6 +19,16 @@ async fn main() -> anyhow::Result<()> {
             "--config" => println!("{}", config::config_path().display()),
             "--models" => list_models(),
             "-h" | "--help" | "/?" => print_help(),
+            "--language" => {
+                let val = args.get(2).cloned().unwrap_or("auto".into());
+                cfg.set_lang(&val); cfg.save();
+                println!("Language set to: {}", val);
+            }
+            "--ui-language" => {
+                let val = args.get(2).cloned().unwrap_or("en".into());
+                cfg.set_ui_lang(&val); cfg.save();
+                println!("UI language set to: {}", val);
+            }
             _ => { let q = args[1..].join(" "); cmd_chat(&cfg, &q).await?; }
         }
         return Ok(());
@@ -96,6 +107,7 @@ async fn repl(cfg: &mut config::Config, mode: &str) -> anyhow::Result<()> {
                 "/godmode" => { mode = "godmode".into(); println!("\x1b[33m  🔥 GODMODE CLASSIC\x1b[0m\n"); }
                 "/snake" => { mode = "parseltongue".into(); println!("\x1b[32m  🐍 Parseltongue\x1b[0m\n"); }
                 "/ultra" => { mode = "ultra".into(); println!("\x1b[36m  🌋 ULTRAPLINIAN\x1b[0m\n"); }
+                "/language" => cmd_language(cfg, parts.get(1).copied()),
                 _ => println!("\x1b[90m  Unknown. /help\x1b[0m\n"),
             }
             continue;
@@ -258,6 +270,25 @@ async fn cmd_ultra(cfg: &config::Config, query: &str, tier: &str) -> anyhow::Res
     let key = cfg.get_api_key()?;
     let endpoint = cfg.get_endpoint();
     run_ultra(&key, &endpoint, query, tier).await
+}
+
+fn cmd_language(cfg: &mut config::Config, arg: Option<&str>) {
+    match arg {
+        Some("auto") | Some("vi") | Some("en") => {
+            cfg.set_lang(arg.unwrap()); cfg.save();
+            let label = match arg.unwrap() { "vi" => "tiếng Việt", "en" => "English", _ => "auto (tự động)", };
+            println!("\x1b[32m  ✓ Ngôn ngữ: {}\x1b[0m\n", label);
+        }
+        None => {
+            let lang = cfg.get_lang();
+            let lang_label = match lang { "vi" => "tiếng Việt", "en" => "English", _ => "auto (tự động)", };
+            let ui = cfg.get_ui_lang();
+            println!("\x1b[36m  Ngôn ngữ phản hồi: {}\x1b[0m", lang_label);
+            println!("\x1b[36m  Ngôn ngữ giao diện: {}\x1b[0m", if ui == "vi" { "Tiếng Việt" } else { "English" });
+            println!("\x1b[90m  /language auto|vi|en để đổi\x1b[0m\n");
+        }
+        _ => println!("\x1b[33m  /language auto|vi|en\x1b[0m\n"),
+    }
 }
 
 fn list_models() {

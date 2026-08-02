@@ -44,6 +44,7 @@ pub struct CandidateScore {
     pub clarity: f64,
     pub performance: f64,
     pub maintainability: f64,
+    pub language_compliance: f64,
     pub total: f64,
 }
 
@@ -51,6 +52,7 @@ impl CandidateScore {
     pub fn compute_total(&mut self) {
         self.total = self.correctness + self.repository_evidence + self.architecture_fit
             + self.minimal_change + self.testability + self.security
-            + self.regression_risk + self.clarity + self.performance + self.maintainability;
+            + self.regression_risk + self.clarity + self.performance + self.maintainability
+            + self.language_compliance;
     }
 }

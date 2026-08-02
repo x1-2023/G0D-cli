@@ -45,7 +45,8 @@ pub async fn run_godmode_classic(
                 persona: c.preset.persona.name.clone(),
             });
 
-            let instruction = format!("{}\n\nTASK:\n{}\n\nREPOSITORY CONTEXT:\n{}", c.system_instruction(), task, ctx);
+            let lang_instruction = ""; // Language passed from orchestrator
+            let instruction = format!("{}\n\nTASK:\n{}\n\nREPOSITORY CONTEXT:\n{}", c.system_instruction(lang_instruction), task, ctx);
 
             let provider = registry.get(&c.preset.provider).await;
             if provider.is_none() {
@@ -66,7 +67,7 @@ pub async fn run_godmode_classic(
                 messages: vec![
                     xai_grok_providers::Message {
                         role: xai_grok_providers::MessageRole::System,
-                        content: xai_grok_providers::MessageContent::Text(c.system_instruction()),
+                        content: xai_grok_providers::MessageContent::Text(c.system_instruction(lang_instruction)),
                         name: None,
                         tool_call_id: None,
                     },

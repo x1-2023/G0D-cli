@@ -20,6 +20,7 @@ pub struct ScoringRubric {
     pub clarity: Weight,
     pub performance: Weight,
     pub maintainability: Weight,
+    pub language_compliance: Weight,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,15 +43,16 @@ impl Default for JudgeConfig {
 pub fn scoring_rubric_coding() -> ScoringRubric {
     ScoringRubric {
         correctness: Weight { max: 20.0, description: "Does the solution address the actual problem correctly?".into() },
-        repository_evidence: Weight { max: 15.0, description: "Are claims backed by specific file paths, line numbers, and code excerpts?".into() },
+        repository_evidence: Weight { max: 14.0, description: "Are claims backed by specific file paths, line numbers, and code excerpts?".into() },
         architecture_fit: Weight { max: 10.0, description: "Does the change fit the existing architecture and patterns?".into() },
-        minimal_change: Weight { max: 10.0, description: "Is the change as small as possible while solving the problem?".into() },
+        minimal_change: Weight { max: 9.0, description: "Is the change as small as possible while solving the problem?".into() },
         testability: Weight { max: 10.0, description: "Are the proposed tests actionable and comprehensive?".into() },
         security: Weight { max: 10.0, description: "Are there any security vulnerabilities or unsafe assumptions?".into() },
-        regression_risk: Weight { max: 10.0, description: "How likely is this change to break existing functionality?".into() },
+        regression_risk: Weight { max: 9.0, description: "How likely is this change to break existing functionality?".into() },
         clarity: Weight { max: 5.0, description: "Is the proposal clear, well-structured, and easy to understand?".into() },
         performance: Weight { max: 5.0, description: "Are there performance implications or optimizations?".into() },
-        maintainability: Weight { max: 5.0, description: "Will the change be maintainable long-term?".into() },
+        maintainability: Weight { max: 3.0, description: "Will the change be maintainable long-term?".into() },
+        language_compliance: Weight { max: 5.0, description: "Is the response in the correct language? Penalize wrong-language output. Do not penalize code/commands/identifiers.".into() },
     }
 }
 

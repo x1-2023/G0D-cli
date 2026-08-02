@@ -10,6 +10,8 @@ pub mod error;
 pub mod events;
 pub mod headless;
 pub mod judge;
+pub mod lang;
+pub mod localization;
 pub mod manual_override;
 pub mod model_selection;
 pub mod multi_judge;
@@ -45,4 +47,10 @@ pub use scoring::score_candidate_deterministic;
 pub use tournament::Tournament;
 pub use ultraplinian::{tier_models, UltraplinianTier};
 pub use race_export::{export_race_json, export_race_markdown};
+pub use lang::{
+    detect_language, safe_truncate, display_width, safe_truncate_by_width,
+    DetectedLanguage, LanguageContext, ResponseLanguage, SupportedLanguage,
+    VIETNAMESE_CANDIDATE_INSTRUCTION, VIETNAMESE_JUDGE_INSTRUCTION,
+};
+pub use localization::{ui_string, localized_provider_error, LocalizationConfig};
 pub use manual_override::{merge_proposals, select_winner};

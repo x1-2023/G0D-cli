@@ -4,6 +4,7 @@ use crate::judge::ScoringRubric;
 pub fn score_candidate_deterministic(
     proposal: &CandidateProposal,
     rubric: &ScoringRubric,
+    expected_lang: Option<crate::lang::SupportedLanguage>,
 ) -> crate::events::CandidateScore {
     let correctness = rubric.correctness.max * evidence_quality(proposal);
     let evidence = rubric.repository_evidence.max * evidence_quality(proposal);
@@ -15,11 +16,12 @@ pub fn score_candidate_deterministic(
     let clarity = rubric.clarity.max * clarity_score(proposal);
     let performance = rubric.performance.max * 0.5;
     let maintainability = rubric.maintainability.max * minimality_score(proposal);
+    let language = rubric.language_compliance.max * language_score(proposal, expected_lang);
 
     let mut score = crate::events::CandidateScore {
         correctness, repository_evidence: evidence, architecture_fit: architecture,
         minimal_change: minimal, testability, security, regression_risk: regression,
-        clarity, performance, maintainability, total: 0.0,
+        clarity, performance, maintainability, language_compliance: language, total: 0.0,
     };
     score.compute_total();
     score
@@ -51,8 +53,44 @@ fn security_score(p: &CandidateProposal) -> f64 {
         let lower = r.to_lowercase();
         lower.contains("secur") || lower.contains("inject") || lower.contains("auth")
             || lower.contains("sanitiz") || lower.contains("validat")
+            || lower.contains("bảo mật") || lower.contains("xác thực") || lower.contains("chèn mã")
+            || lower.contains("lỗ hổng") || lower.contains("mã hóa") || lower.contains("phân quyền")
     });
     if has_security_aware { 0.8 } else { 0.3 }
+}
+
+fn language_score(p: &CandidateProposal, expected_lang: Option<crate::lang::SupportedLanguage>) -> f64 {
+    let Some(lang) = expected_lang else { return 1.0 };
+    let summary_lower = p.summary.to_lowercase();
+    let diagnosis_lower = p.diagnosis.to_lowercase();
+
+    match lang {
+        crate::lang::SupportedLanguage::Vietnamese => {
+            let has_vn = summary_lower.chars().any(|c| matches!(c,
+                'ắ' | 'ằ' | 'ẳ' | 'ẵ' | 'ặ' | 'ấ' | 'ầ' | 'ẩ' | 'ẫ' | 'ậ' |
+                'ế' | 'ề' | 'ể' | 'ễ' | 'ệ' | 'ố' | 'ồ' | 'ổ' | 'ỗ' | 'ộ' |
+                'ớ' | 'ờ' | 'ở' | 'ỡ' | 'ợ' | 'ứ' | 'ừ' | 'ử' | 'ữ' | 'ự' |
+                'á' | 'à' | 'ả' | 'ã' | 'ạ' | 'é' | 'è' | 'ẻ' | 'ẽ' | 'ẹ' |
+                'í' | 'ì' | 'ỉ' | 'ĩ' | 'ị' | 'ó' | 'ò' | 'ỏ' | 'õ' | 'ọ' |
+                'ú' | 'ù' | 'ủ' | 'ũ' | 'ụ' | 'ý' | 'ỳ' | 'ỷ' | 'ỹ' | 'ỵ' |
+                'ă' | 'â' | 'đ' | 'ê' | 'ô' | 'ơ' | 'ư'
+            ));
+            // Check if diagnosis text has Vietnamese function words
+            let has_vn_words = ["của", "và", "một", "cho", "để", "trong", "được", "không", "có", "là"]
+                .iter().any(|w| diagnosis_lower.contains(w));
+            if has_vn || has_vn_words { 1.0 } else { 0.3 }
+        }
+        crate::lang::SupportedLanguage::English => {
+            // Penalize if mostly Vietnamese
+            let vn_char_count = summary_lower.chars().filter(|c| matches!(c,
+                'ắ' | 'ằ' | 'ẳ' | 'ế' | 'ề' | 'ể' | 'ố' | 'ồ' | 'ổ' |
+                'ớ' | 'ờ' | 'ở' | 'ứ' | 'ừ' | 'ử' | 'á' | 'à' | 'ả' |
+                'é' | 'è' | 'ẻ' | 'í' | 'ì' | 'ỉ' | 'ó' | 'ò' | 'ỏ' |
+                'ú' | 'ù' | 'ủ' | 'ý' | 'ỳ' | 'ỷ' | 'ă' | 'â' | 'đ' | 'ê' | 'ô' | 'ơ' | 'ư'
+            )).count();
+            if vn_char_count > 3 { 0.3 } else { 1.0 }
+        }
+    }
 }
 
 fn clarity_score(p: &CandidateProposal) -> f64 {

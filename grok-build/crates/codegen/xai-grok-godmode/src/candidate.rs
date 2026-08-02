@@ -59,16 +59,17 @@ impl CandidateAgent {
         self.preset.persona.denied_tools.clone()
     }
 
-    pub fn system_instruction(&self) -> String {
+    pub fn system_instruction(&self, lang_instruction: &str) -> String {
         format!(
             "You are the {} persona: {}. {}\n\nYou are a candidate agent in a multi-model coding race. \
              Analyze the task and repository, then produce a structured proposal with evidence, \
              diagnosis, and recommended changes. Be specific and cite exact file paths and line numbers.\n\n\
-             FORMAT: Output a JSON proposal with fields: summary, diagnosis, evidence, files_to_change, \
+             {}FORMAT: Output a JSON proposal with fields: summary, diagnosis, evidence, files_to_change, \
              symbols_to_change, proposed_changes, tests, risks, assumptions, limitations, confidence.",
             self.preset.persona.name,
             self.preset.persona.role,
             self.preset.persona.instruction,
+            lang_instruction,
         )
     }
 }

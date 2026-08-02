@@ -161,7 +161,7 @@ mod tests {
             total_cost_usd: 0.0,
             total_latency_ms: 0,
         };
-        let json = race_export::export_race_json(&race);
+        let json = race_export::export_race_json(&race, None);
         assert!(json.contains("test-1"));
         assert!(serde_json::from_str::<serde_json::Value>(&json).is_ok());
     }
@@ -176,7 +176,7 @@ mod tests {
             total_cost_usd: 0.0,
             total_latency_ms: 0,
         };
-        let md = race_export::export_race_markdown(&race);
+        let md = race_export::export_race_markdown(&race, None);
         assert!(md.contains("# Race Result: test-1"));
     }
 
@@ -285,5 +285,177 @@ mod tests {
         assert!(merged.risks.contains(&"risk1".to_string()));
         assert!(merged.risks.contains(&"risk2".to_string()));
         assert!((merged.confidence - 0.85).abs() < 0.01);
+    }
+
+    // ── Language Tests ──────────────────────────────────────
+
+    #[test]
+    fn test_lang_detect_vietnamese() {
+        let (lang, conf) = lang::detect_language("sửa lỗi đăng nhập giúp tao");
+        assert_eq!(lang, lang::DetectedLanguage::Vietnamese);
+        assert!(conf > 0.5);
+    }
+
+    #[test]
+    fn test_lang_detect_english() {
+        let (lang, _) = lang::detect_language("explain this function please");
+        assert_eq!(lang, lang::DetectedLanguage::English);
+    }
+
+    #[test]
+    fn test_lang_context_override_vi() {
+        let mut ctx = lang::LanguageContext::new(lang::ResponseLanguage::Vietnamese);
+        ctx.resolve("hello world");
+        assert_eq!(ctx.effective, lang::SupportedLanguage::Vietnamese);
+        assert!(ctx.is_vietnamese());
+    }
+
+    #[test]
+    fn test_lang_context_auto_vn() {
+        let mut ctx = lang::LanguageContext::new(lang::ResponseLanguage::Auto);
+        ctx.resolve("fix lỗi đăng nhập này");
+        assert_eq!(ctx.effective, lang::SupportedLanguage::Vietnamese);
+    }
+
+    #[test]
+    fn test_lang_context_auto_en() {
+        let mut ctx = lang::LanguageContext::new(lang::ResponseLanguage::Auto);
+        ctx.resolve("explain this function");
+        assert_eq!(ctx.effective, lang::SupportedLanguage::English);
+    }
+
+    #[test]
+    fn test_candidate_vn_instruction() {
+        let mut ctx = lang::LanguageContext::new(lang::ResponseLanguage::Vietnamese);
+        ctx.resolve("sửa lỗi giúp tôi");
+        let instruction = ctx.candidate_instruction();
+        assert!(instruction.contains("tiếng Việt"));
+        assert!(!instruction.is_empty());
+    }
+
+    #[test]
+    fn test_autotune_vn_debugging() {
+        let (ctx, _) = autotune::AutoTune::classify("sửa lỗi đăng nhập");
+        assert_eq!(ctx, autotune::AutoTuneContext::Debugging);
+    }
+
+    #[test]
+    fn test_autotune_vn_implementation() {
+        let (ctx, _) = autotune::AutoTune::classify("viết thêm chức năng upload ảnh");
+        assert_eq!(ctx, autotune::AutoTuneContext::Implementation);
+    }
+
+    #[test]
+    fn test_autotune_vn_refactoring() {
+        let (ctx, _) = autotune::AutoTune::classify("tái cấu trúc module auth");
+        assert_eq!(ctx, autotune::AutoTuneContext::Refactoring);
+    }
+
+    #[test]
+    fn test_autotune_vn_code_review() {
+        let (ctx, _) = autotune::AutoTune::classify("review giúp tao phần thanh toán");
+        assert_eq!(ctx, autotune::AutoTuneContext::CodeReview);
+    }
+
+    #[test]
+    fn test_autotune_vn_security() {
+        let (ctx, _) = autotune::AutoTune::classify("kiểm tra lỗ hổng bảo mật");
+        assert_eq!(ctx, autotune::AutoTuneContext::SecurityAudit);
+    }
+
+    #[test]
+    fn test_autotune_vn_architecture() {
+        let (ctx, _) = autotune::AutoTune::classify("thiết kế kiến trúc cho hệ thống này");
+        assert_eq!(ctx, autotune::AutoTuneContext::Architecture);
+    }
+
+    #[test]
+    fn test_autotune_vn_test_generation() {
+        let (ctx, _) = autotune::AutoTune::classify("viết test cho service này");
+        assert_eq!(ctx, autotune::AutoTuneContext::TestGeneration);
+    }
+
+    #[test]
+    fn test_autotune_vn_code_explanation() {
+        let (ctx, _) = autotune::AutoTune::classify("giải thích đoạn code này");
+        assert_eq!(ctx, autotune::AutoTuneContext::CodeExplanation);
+    }
+
+    #[test]
+    fn test_autotune_vn_repo_search() {
+        let (ctx, _) = autotune::AutoTune::classify("tìm chỗ khai báo biến này");
+        assert_eq!(ctx, autotune::AutoTuneContext::RepositorySearch);
+    }
+
+    #[test]
+    fn test_autotune_vn_planning() {
+        let (ctx, _) = autotune::AutoTune::classify("lên kế hoạch triển khai");
+        assert_eq!(ctx, autotune::AutoTuneContext::Planning);
+    }
+
+    #[test]
+    fn test_refusal_vietnamese() {
+        let status = refusal::RefusalDetector::detect("tôi không thể thực hiện yêu cầu này");
+        assert!(refusal::RefusalDetector::is_refused(&status));
+    }
+
+    #[test]
+    fn test_refusal_vn_xin_loi() {
+        let status = refusal::RefusalDetector::detect("tôi xin lỗi, tôi không thể giúp bạn việc này");
+        assert!(refusal::RefusalDetector::is_refused(&status));
+    }
+
+    #[test]
+    fn test_race_export_vn() {
+        let race = orchestrator::RaceResult {
+            race_id: "vn-1".into(), winner: None, candidates: vec![],
+            judge_decisions: vec![], total_cost_usd: 0.0, total_latency_ms: 0,
+        };
+        let md = race_export::export_race_markdown(&race, Some(lang::SupportedLanguage::Vietnamese));
+        assert!(md.contains("Kết quả cuộc đua"));
+        assert!(md.contains("Ứng viên"));
+
+        let en_md = race_export::export_race_markdown(&race, Some(lang::SupportedLanguage::English));
+        assert!(en_md.contains("Race Result"));
+    }
+
+    #[test]
+    fn test_localized_ui_strings() {
+        let s = localization::ui_string("Race started", "vi");
+        assert_eq!(s, "Bắt đầu cuộc đua");
+
+        let s2 = localization::ui_string("Race started", "en");
+        assert_eq!(s2, "Race started");
+    }
+
+    #[test]
+    fn test_localized_provider_error() {
+        let msg = localization::localized_provider_error("401 Unauthorized", "vi");
+        assert!(msg.contains("Xác thực thất bại"));
+        assert!(msg.contains("Lỗi gốc"));
+        assert!(msg.contains("401 Unauthorized"));
+    }
+
+    #[test]
+    fn test_score_language_compliance() {
+        let rubric = judge::scoring_rubric_coding();
+        assert!(rubric.language_compliance.max > 0.0);
+
+        let proposal = candidate::CandidateProposal {
+            candidate_id: "test".into(), provider: "x".into(), model: "m".into(),
+            persona: "Test".into(),
+            summary: "Vấn đề nằm ở auth.rs dòng 42".into(),
+            diagnosis: "Cần kiểm tra lại logic xác thực token trong file auth.rs".into(),
+            evidence: vec![], files_to_change: vec!["auth.rs".into()],
+            symbols_to_change: vec![], proposed_changes: vec![],
+            proposed_patch: None, commands_to_run: vec![],
+            tests: vec![], risks: vec!["lỗ hổng bảo mật".into()],
+            assumptions: vec![], limitations: vec![],
+            confidence: 0.9,
+        };
+        let score = scoring::score_candidate_deterministic(&proposal, &rubric, Some(lang::SupportedLanguage::Vietnamese));
+        assert!(score.language_compliance > 0.0);
+        assert!(score.security > 0.0);
+        assert!(score.total > 0.0);
     }
 }

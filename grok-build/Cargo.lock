@@ -13409,6 +13409,8 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "unicode-normalization",
+ "unicode-width 0.2.0",
  "uuid",
  "xai-grok-providers",
 ]

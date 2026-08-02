@@ -236,7 +236,7 @@ fn cmd_score_demo() {
         limitations: vec![],
         confidence: 0.85,
     };
-    let score = score_candidate_deterministic(&proposal, &rubric);
+    let score = score_candidate_deterministic(&proposal, &rubric, None);
     println!("Proposal score: {:.1}/100", score.total);
     println!("  correctness:     {:.1}", score.correctness);
     println!("  evidence:        {:.1}", score.repository_evidence);
@@ -274,10 +274,10 @@ fn cmd_export_demo() {
     };
 
     println!("=== JSON Export ===\n");
-    println!("{}", race_export::export_race_json(&race));
+    println!("{}", race_export::export_race_json(&race, None));
 
     println!("\n=== Markdown Export ===\n");
-    println!("{}", race_export::export_race_markdown(&race));
+    println!("{}", race_export::export_race_markdown(&race, None));
 }
 
 fn cmd_health_demo() {

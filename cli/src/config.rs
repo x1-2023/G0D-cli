@@ -7,6 +7,10 @@ pub struct Config {
     pub default_model: Option<String>,
     #[serde(default)]
     pub providers: Vec<ProviderEntry>,
+    #[serde(default)]
+    pub lang: Option<String>,
+    #[serde(default)]
+    pub ui_lang: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -127,6 +131,22 @@ impl Config {
 
     pub fn set_default_provider(&mut self, id: &str) {
         self.default_provider = Some(id.to_string());
+    }
+
+    pub fn get_lang(&self) -> &str {
+        self.lang.as_deref().unwrap_or("auto")
+    }
+
+    pub fn get_ui_lang(&self) -> &str {
+        self.ui_lang.as_deref().unwrap_or("en")
+    }
+
+    pub fn set_lang(&mut self, lang: &str) {
+        self.lang = Some(lang.to_string());
+    }
+
+    pub fn set_ui_lang(&mut self, lang: &str) {
+        self.ui_lang = Some(lang.to_string());
     }
 }
 
