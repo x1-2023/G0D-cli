@@ -384,6 +384,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "g0d"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "crossterm",
+ "dirs",
+ "futures",
+ "ratatui",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "xai-grok-godmode",
+ "xai-grok-providers",
+]
+
+[[package]]
 name = "getrandom"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -408,29 +431,6 @@ dependencies = [
  "r-efi",
  "rand_core 0.10.1",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "god3"
-version = "1.0.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "crossterm",
- "dirs",
- "futures",
- "ratatui",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
- "toml",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "xai-grok-godmode",
- "xai-grok-providers",
 ]
 
 [[package]]
