@@ -1,6 +1,4 @@
-use std::sync::Arc;
-use tokio::sync::mpsc;
-use crate::config::{GodmodeConfig, CandidatePreset};
+use crate::config::CandidatePreset;
 use crate::candidate::{CandidateAgent, CandidateProposal};
 use crate::error::GodmodeError;
 use crate::events::GodmodeEvent;

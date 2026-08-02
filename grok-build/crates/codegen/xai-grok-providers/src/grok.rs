@@ -1,13 +1,12 @@
 use async_trait::async_trait;
-use futures::stream;
 use crate::capabilities::ProviderCapabilities;
-use crate::config::{ProviderConfig, ProviderType};
+use crate::config::ProviderConfig;
 use crate::error::ProviderError;
 use crate::model_catalog::ModelInfo;
-use crate::model_health::{HealthState, ProviderHealth};
+use crate::model_health::ProviderHealth;
 use crate::provider::ModelProvider;
 use crate::request::ModelRequest;
-use crate::response::{ModelResponse, ModelStream, UsageInfo};
+use crate::response::{ModelResponse, ModelStream};
 
 pub struct GrokProvider {
     config: ProviderConfig,
@@ -21,7 +20,7 @@ impl GrokProvider {
     }
 
     fn default_models() -> Vec<ModelInfo> {
-        let mut info = ModelInfo {
+        let info = ModelInfo {
             provider: "grok".into(),
             model_id: "grok-code-fast".into(),
             display_name: Some("Grok Code Fast".into()),

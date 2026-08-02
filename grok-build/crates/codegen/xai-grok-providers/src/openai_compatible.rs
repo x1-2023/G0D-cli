@@ -1,6 +1,5 @@
 use async_trait::async_trait;
 use reqwest::Client;
-use std::sync::Arc;
 use std::time::Duration;
 use crate::capabilities::ProviderCapabilities;
 use crate::config::ProviderConfig;
@@ -84,7 +83,7 @@ impl ModelProvider for OpenAICompatibleProvider {
             provider: self.config.id.clone(), detail: e.to_string(),
         })?;
 
-        let models = body["data"].as_array().unwrap_or(&vec![]).iter().map(|m| ModelInfo {
+        let models: Vec<ModelInfo> = body["data"].as_array().unwrap_or(&vec![]).iter().map(|m| ModelInfo {
             provider: self.config.id.clone(),
             model_id: m["id"].as_str().unwrap_or("unknown").to_string(),
             display_name: m["id"].as_str().map(|s| s.to_string()),

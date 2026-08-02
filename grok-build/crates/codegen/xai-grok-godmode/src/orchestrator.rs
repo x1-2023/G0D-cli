@@ -1,12 +1,8 @@
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use tokio::sync::mpsc;
 use crate::config::GodmodeConfig;
-use crate::error::GodmodeError;
 use crate::events::GodmodeEvent;
-use crate::candidate::{CandidateAgent, CandidateProposal};
-use crate::judge::JudgeConfig;
-use crate::scoring::scoring_rubric_coding;
+use crate::candidate::CandidateProposal;
 
 pub struct Orchestrator {
     config: GodmodeConfig,

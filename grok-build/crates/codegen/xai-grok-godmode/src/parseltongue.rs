@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Intensity {
@@ -42,7 +41,7 @@ impl Parseltongue {
 
         let mut result = text.to_string();
         let mut applied = Vec::new();
-        let transformations: Vec<&dyn Fn(&str) -> String> = ALL_TRANSFORMATIONS.iter().take(technique_count).collect();
+        let transformations: Vec<&dyn Fn(&str) -> String> = ALL_TRANSFORMATIONS.iter().take(technique_count).map(|f| f as &dyn Fn(&str) -> String).collect();
 
         for trigger in &triggers {
             for (i, transform) in transformations.iter().enumerate() {
@@ -64,9 +63,10 @@ impl Parseltongue {
     }
 
     fn detect_triggers(&self, text: &str, custom: &[String]) -> Vec<String> {
-        let all_triggers: Vec<&str> = DEFAULT_TRIGGERS.iter().chain(custom.iter().map(|s| s.as_str())).collect();
+        let custom_refs: Vec<&str> = custom.iter().map(|s| s.as_str()).collect();
+        let all_triggers: Vec<&str> = DEFAULT_TRIGGERS.iter().copied().chain(custom_refs.iter().copied()).collect();
         let lower = text.to_lowercase();
-        let mut found = Vec::new();
+        let mut found: Vec<String> = Vec::new();
         for trigger in all_triggers {
             if lower.contains(&trigger.to_lowercase()) && !found.contains(&trigger.to_string()) {
                 found.push(trigger.to_string());
@@ -184,8 +184,8 @@ fn morse_char(c: char) -> String {
         'Z' => "--..", '0' => "-----", '1' => ".----", '2' => "..---",
         '3' => "...--", '4' => "....-", '5' => ".....", '6' => "-....",
         '7' => "--...", '8' => "---..", '9' => "----.", ' ' => "/",
-        _ => c.to_string(),
-    }
+        _ => "",
+    }.to_string()
 }
 
 mod base64_mini {

@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use crate::error::ProviderError;
 use crate::provider::ModelProvider;
 use crate::model_health::ProviderHealth;
 
@@ -50,7 +49,7 @@ impl ProviderRegistry {
         guard.remove(id);
     }
 
-    pub async fn resolve_provider_for_model(&self, provider_id: &str, model_id: &str) -> Option<Arc<dyn ModelProvider>> {
+    pub async fn resolve_provider_for_model(&self, provider_id: &str, _model_id: &str) -> Option<Arc<dyn ModelProvider>> {
         self.get(provider_id).await.filter(|_| true)
     }
 

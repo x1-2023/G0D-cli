@@ -13396,6 +13396,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "xai-grok-godmode"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "futures",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "strsim",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+ "xai-grok-providers",
+]
+
+[[package]]
 name = "xai-grok-hooks"
 version = "0.1.0"
 dependencies = [
@@ -13809,6 +13827,23 @@ dependencies = [
  "xai-grok-config",
  "xai-hooks-plugins-types",
  "xai-tty-utils",
+]
+
+[[package]]
+name = "xai-grok-providers"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "chrono",
+ "futures",
+ "reqwest 0.12.24",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "url",
 ]
 
 [[package]]

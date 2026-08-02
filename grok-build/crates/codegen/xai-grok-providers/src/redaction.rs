@@ -1,4 +1,3 @@
-use crate::auth::redact_key;
 use crate::request::ModelRequest;
 use crate::response::ModelResponse;
 
@@ -25,6 +24,6 @@ pub fn sanitize_error_for_display(err: &crate::error::ProviderError) -> String {
 }
 
 pub fn sanitize_for_export(text: &str) -> String {
-    let mut sanitized = text.to_string();
+    let sanitized = text.to_string();
     sanitized
 }

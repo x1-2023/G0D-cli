@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use crate::config::CandidatePreset;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

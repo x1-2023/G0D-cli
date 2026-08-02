@@ -1,7 +1,6 @@
 use async_trait::async_trait;
-use futures::stream::{self, StreamExt};
+use futures::stream::StreamExt;
 use reqwest::Client;
-use std::sync::Arc;
 use std::time::Duration;
 use crate::capabilities::ProviderCapabilities;
 use crate::config::ProviderConfig;

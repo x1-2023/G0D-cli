@@ -1,5 +1,3 @@
-use std::sync::Arc;
-use crate::candidate::CandidateProposal;
 use crate::orchestrator::RaceCandidateResult;
 
 pub struct Tournament;

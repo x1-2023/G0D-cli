@@ -1,4 +1,3 @@
-use crate::config::{CandidatePreset, PersonaConfig};
 use crate::candidate::CandidateProposal;
 
 pub fn merge_proposals(proposals: &[CandidateProposal]) -> CandidateProposal {
@@ -15,7 +14,7 @@ pub fn merge_proposals(proposals: &[CandidateProposal]) -> CandidateProposal {
 
     let mut merged = proposals[0].clone();
     merged.candidate_id = format!("merged-{}", proposals.iter().map(|p| &p.candidate_id).cloned().collect::<Vec<_>>().join("+"));
-    merged.confidence = proposals.iter().map(|p| p.confidence as f64).sum::<f64>() / proposals.len() as f64;
+    merged.confidence = (proposals.iter().map(|p| p.confidence as f64).sum::<f64>() / proposals.len() as f64) as f32;
 
     for p in &proposals[1..] {
         for f in &p.files_to_change { if !merged.files_to_change.contains(f) { merged.files_to_change.push(f.clone()); } }

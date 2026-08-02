@@ -13,7 +13,7 @@ impl Default for StreamingConfig {
     }
 }
 
-pub fn classify_streaming_error(err: &ProviderError, provider: &str) -> Option<HealthState> {
+pub fn classify_streaming_error(err: &ProviderError, _provider: &str) -> Option<HealthState> {
     match err {
         ProviderError::RateLimited { .. } => Some(HealthState::RateLimited),
         ProviderError::Auth { .. } => Some(HealthState::Unauthorized),
@@ -24,7 +24,7 @@ pub fn classify_streaming_error(err: &ProviderError, provider: &str) -> Option<H
 
 pub fn normalize_tool_calls(
     raw_tool_calls: Vec<crate::response::ToolCall>,
-    provider: &str,
+    _provider: &str,
 ) -> Vec<crate::response::ToolCall> {
     raw_tool_calls
 }
