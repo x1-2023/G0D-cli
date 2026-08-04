@@ -1,0 +1,7 @@
+# Rust build output and isolated verification builds
+/cli/target/
+/.verify-target/
+
+# Local scratch files
+*.tmp
+*.log

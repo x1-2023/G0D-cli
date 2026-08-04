@@ -1,94 +1,128 @@
-﻿# G0D-cli
+# G0D CLI
 
-G0DM0D3 Coding Edition — multi-provider, multi-model coding agent CLI.
+`g0d` is a Rust-based, multi-provider coding agent with a Codex-style interactive terminal experience.
 
+## Highlights
+
+- Agentic chat with an OpenAI-compatible function-calling loop
+- Workspace-scoped file inspection/editing, bounded command/test execution, Git inspection, and unified patch tools
+- Approval mode defaults to `on`: every command or write asks `[y/N]`; `--approval off` enables automatic execution
+- Path traversal, absolute paths, `.git`, and `.env` writes are blocked
+- Persistent input history and `Ctrl-R` search
+- Slash-command and argument completion with `Tab`
+- Command aliases and typo suggestions
+- Workspace-scoped sessions persist across terminals; use `--resume`, `/resume`, or `/new`
+- Project context (working directory, project type, Git branch/status)
+- Provider/model configuration with OpenRouter, Venice, xAI, Ollama, and LM Studio defaults
+- Animated request status in a TTY and clean status messages in headless mode
+- GODMODE, Parseltongue, and ULTRAPLINIAN modes from the existing `grok-build` crates
+- TTY-safe colors plus `NO_COLOR`, `--no-color`, and `--headless`
+
+## Build
+
+```powershell
+cd E:\LastWar-Multibox\G0D-cli\cli
+cargo build --release
 ```
- ▄████  ██████  ██████  ███▄ ▄███  ██████  ██████  ██████
-██      ██  ██  ██   ██ ██ ███ ██  ██  ██  ██   ██      ██
-██ ▄███ ██  ██  ██   ██ ██  █  ██  ██  ██  ██   ██  █████
-██  ██  ██  ██  ██   ██ ██     ██  ██  ██  ██   ██      ██
- ██████  ████   ██████  ██     ██   ████   ██████  ██████
-   GODMODE CLI — Multi-model Coding Agent
+
+Local end-to-end smoke test (no real API key): start `python .\tests\mock_openai.py`, then run the release binary with `--provider lmstudio --model mock "ping"` from another terminal.
+
+The binary is written to `cli\target\release\g0d.exe`.
+
+## Install on Windows
+
+```powershell
+cd E:\LastWar-Multibox\G0D-cli
+powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-## Quick Start
+Open a new terminal after installation. From any project directory, run `g0d`. To remove the user-level installation, run `.\uninstall.ps1`.
 
-```bash
-# 1. Get OpenRouter key: https://openrouter.ai/keys
-# 2. Save key
-god3 --key sk-or-v1-...
+## Configure
 
-# 3. Chat
-god3 "explain this code"
+Environment variables are recommended so secrets do not need to be stored in the config file:
 
-# 4. GODMODE CLASSIC (5 candidates racing)
-god3 -g "fix the auth bug"
-
-# 5. Parseltongue (input obfuscation)
-god3 -p "how to bypass security"
-
-# 6. ULTRAPLINIAN (multi-model race)
-god3 -u --tier=fast "review this architecture"
-
-# 7. Interactive REPL
-god3
+```powershell
+$env:OPENROUTER_API_KEY = "sk-or-v1-..."
+g0d --provider openrouter --model anthropic/claude-sonnet-4
 ```
+
+To persist a key for the current provider:
+
+```powershell
+g0d --key sk-or-v1-...
+```
+
+Use `g0d --config` to print the config path. Local OpenAI-compatible endpoints are available as `ollama` (`127.0.0.1:11434/v1`) and `lmstudio` (`127.0.0.1:1234/v1`).
+
+For portable installs and CI, set `G0D_CONFIG_DIR` to override both the config and history directory.
 
 ## Usage
 
-```
-god3                              Interactive REPL mode
-god3 "query"                      Single-shot chat
-god3 -g "query"                   GODMODE CLASSIC (5 candidates)
-god3 -p "query"                   Parseltongue obfuscation  
-god3 -u --tier=fast "query"       ULTRAPLINIAN race
-god3 -k sk-or-v1-...              Save API key
-god3 --models                     List model tiers
-god3 --config                     Show config path
-god3 --help                       Help
-```
+```text
+g0d [OPTIONS] [QUERY]
 
-## REPL Commands
-
-| Command | Action |
-|---------|--------|
-| `/chat` | Chat mode |
-| `/godmode` | GODMODE CLASSIC |
-| `/snake` | Parseltongue |
-| `/ultra` | ULTRAPLINIAN |
-| `/key KEY` | Set API key |
-| `/status` | Show mode |
-| `/help` | Commands |
-| `/exit` | Quit |
-
-## Build from Source
-
-```bash
-cd cli
-cargo build --release
-# Binary at: target/release/god3.exe (or ./target/release/god3)
+g0d                              Interactive REPL
+g0d "inspect and fix this bug"   One-shot coding-agent task
+g0d -g "review this design"      GODMODE candidate race
+g0d -p "rewrite this prompt"     Parseltongue mode
+g0d -u --tier fast "compare"     ULTRAPLINIAN race
+g0d --models                     List model tiers
+g0d --approval on               Ask before every command/write (default)
+g0d --approval off              Allow automatic command/write execution
+g0d --resume                    Resume latest session for this directory
+g0d --resume=<session-id>       Resume a specific session
+g0d --help                       Full CLI help
 ```
 
-## Architecture
+Piped input is supported:
 
-- `xai-grok-providers` — Multi-provider abstraction (Grok, OpenRouter, Venice, Local)
-- `xai-grok-godmode` — GODMODE CLASSIC, ULTRAPLINIAN, Parseltongue (33), AutoTune (20)
-- `cli/` — Standalone terminal binary
+```powershell
+Get-Content .\error.log | g0d --headless
+```
 
-## Features
+## Interactive commands
 
-- **GODMODE CLASSIC**: 5-model parallel racing with persona-presets
-- **ULTRAPLINIAN**: 5-tier multi-model evaluation (12-60 models)
-- **Parseltongue**: 33 transformation techniques, 3 intensity tiers
-- **AutoTune**: 20-context adaptive parameter engine
-- **Multi-provider**: Grok, OpenRouter, Venice, OpenAI-compatible local
-- **Privacy**: 4 modes (Standard, NoLog, LocalOnly, PrivacyPreview)
-- **Scoring**: 10-axis rubric (100 points)
-- **Tournament**: Group-based elimination judging
-- **Race Export**: JSON + Markdown formats
-- **41 unit tests** (all passing)
+| Command | Purpose |
+| --- | --- |
+| `/help` | Show commands and keybindings |
+| `/status` | Show mode, provider, model, key source, config, and history |
+| `/key <key>` | Save a key for the active provider |
+| `/model [id]` | Show or change the model |
+| `/provider <action>` | List/add/remove/select providers or set a provider key |
+| `/config [show\|path]` | Show sanitized config or its path |
+| `/context` | Show the project context sent to the model |
+| `/language <auto\|vi\|en>` | Select response language |
+| `/chat`, `/godmode`, `/snake`, `/ultra [tier]` | Change mode |
+| `/approval [on\|off]` | Show or change command/write approval |
+| `/session`, `/sessions`, `/resume [id]` | Inspect and resume workspace sessions |
+| `/new` | Start and persist a fresh session |
+| `/history` | Print persistent input history |
+| `/clear` | Clear the terminal |
+| `/exit` | Exit |
 
-## Based on
+Aliases such as `/m`, `/g`, `/u`, `/ps`, `/cfg`, and `/quit` are supported.
 
-- [grok-build](https://github.com/xai-org/grok-build) by xAI
-- [G0DM0D3](https://github.com/elder-plinius/G0DM0D3) concepts by Pliny the Prompter
+## Keybindings
+
+- `Tab`: open/advance completion
+- `Shift-Tab`: previous completion
+- `Ctrl-R`: searchable history menu
+- `Up` / `Down`: navigate history
+- `Ctrl-L`: clear screen
+- `Alt-Enter`: insert a newline
+- `Ctrl-C`: cancel the current input
+- `Ctrl-D`: exit
+
+Slash commands are intentionally excluded from the history file so keys entered with `/key` are not persisted there.
+
+## Coding-agent behavior
+
+Normal chat mode is agentic. The model can inspect the current working directory, edit files, apply unified patches, inspect Git, and execute commands/tests. Read-only tools run automatically. With approval mode on, commands and writes ask `[y/N]`; a non-interactive/headless process denies them. The loop stops after 10 model/tool steps, command runtime is capped at 120 seconds, and tool output is bounded.
+
+Run `g0d` from the repository you want it to work on:
+
+```powershell
+cd E:\path\to\your-project
+g0d "inspect the auth flow, fix the validation, run tests, and show the diff"
+```
