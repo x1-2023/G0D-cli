@@ -7,11 +7,14 @@ use crate::{
     terminal::TerminalState,
 };
 use anyhow::{Context, Result};
+use futures::StreamExt;
 use serde_json::{json, Value};
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::IsTerminal;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
@@ -23,10 +26,19 @@ const MAX_GLOB_MATCHES: usize = 200;
 const MAX_IDENTICAL_ERRORS: usize = 3;
 
 /// Optional per-run overrides for the agent loop.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct RunOptions {
     pub max_steps: Option<usize>,
     pub approval: Option<ApprovalMode>,
+    /// When set true by the UI, the agent aborts between steps / mid-stream.
+    pub cancel: Option<Arc<AtomicBool>>,
+}
+
+fn cancelled(options: &RunOptions) -> bool {
+    options
+        .cancel
+        .as_ref()
+        .is_some_and(|flag| flag.load(Ordering::Relaxed))
 }
 
 #[derive(Default)]
@@ -144,6 +156,13 @@ pub async fn run(
     let mut identical_error_streak = 0usize;
     let mut stuck_on_errors = false;
     for step in 0..max_steps {
+        if cancelled(&options) {
+            sink.emit(AgentEvent::Cancelled);
+            let note = "Cancelled by user.";
+            finish_session(session, query, note, config.max_context_messages, &usage)?;
+            print_usage(config, &usage, session, sink);
+            return Ok(());
+        }
         let status_label = if step == 0 {
             format!("Thinking · step 1/{max_steps}")
         } else {
@@ -156,7 +175,7 @@ pub async fn run(
             "messages": messages,
             "tools": tool_definitions(),
             "tool_choice": "auto",
-            "stream": false,
+            "stream": true,
             "temperature": 0.2,
             "max_tokens": 8192
         });
@@ -166,116 +185,113 @@ pub async fn run(
             .send()
             .await
             .with_context(|| format!("Agent API request failed ({url})"))?;
-        indicator.stop();
-        sink.emit(AgentEvent::ClearStatus);
 
         if !response.status().is_success() {
+            indicator.stop();
+            sink.emit(AgentEvent::ClearStatus);
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
+            // Some third-party gateways reject stream+tools — fall back to non-stream once.
+            if status.as_u16() == 400 || status.as_u16() == 422 {
+                let fallback = stream_fallback_nonstream(
+                    &client,
+                    &url,
+                    config,
+                    key,
+                    &messages,
+                    options.cancel.as_ref(),
+                )
+                .await;
+                if let Ok((message, step_usage)) = fallback {
+                    usage.prompt = usage.prompt.saturating_add(step_usage.prompt);
+                    usage.completion = usage.completion.saturating_add(step_usage.completion);
+                    if handle_assistant_message(
+                        message,
+                        &workspace,
+                        term,
+                        approval_mode,
+                        sink,
+                        &mut messages,
+                        &mut trace,
+                        &mut last_error_sig,
+                        &mut identical_error_streak,
+                        &mut stuck_on_errors,
+                        session,
+                        query,
+                        config,
+                        &usage,
+                        false,
+                    )
+                    .await?
+                    {
+                        return Ok(());
+                    }
+                    if stuck_on_errors {
+                        break;
+                    }
+                    continue;
+                }
+            }
             anyhow::bail!(crate::api::format_http_error(status, &body, &url));
         }
 
-        let payload: Value = response
-            .json()
-            .await
-            .context("Provider returned invalid JSON")?;
-        usage.absorb(&payload);
-        let message = payload
-            .pointer("/choices/0/message")
-            .cloned()
-            .context("Provider response did not contain an assistant message")?;
-        let calls = message
-            .get("tool_calls")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-
-        if calls.is_empty() {
-            let answer = message
-                .get("content")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .trim();
-            if answer.is_empty() {
-                anyhow::bail!("Agent stopped without a response");
+        let streamed = match read_chat_stream(response, sink, options.cancel.as_ref()).await {
+            Ok(value) => value,
+            Err(err) if err.to_string().contains("cancelled") => {
+                indicator.stop();
+                sink.emit(AgentEvent::ClearStatus);
+                sink.emit(AgentEvent::Cancelled);
+                let note = "Cancelled by user during stream.";
+                finish_session(session, query, note, config.max_context_messages, &usage)?;
+                print_usage(config, &usage, session, sink);
+                return Ok(());
             }
-            sink.emit(AgentEvent::Assistant(answer.into()));
-            finish_session(session, query, answer, config.max_context_messages, &usage)?;
-            print_usage(config, &usage, session, sink);
+            Err(err) => {
+                indicator.stop();
+                sink.emit(AgentEvent::ClearStatus);
+                return Err(err);
+            }
+        };
+        indicator.stop();
+        sink.emit(AgentEvent::ClearStatus);
+        usage.prompt = usage.prompt.saturating_add(streamed.usage.prompt);
+        usage.completion = usage
+            .completion
+            .saturating_add(streamed.usage.completion);
+
+        if handle_assistant_message(
+            streamed.message,
+            &workspace,
+            term,
+            approval_mode,
+            sink,
+            &mut messages,
+            &mut trace,
+            &mut last_error_sig,
+            &mut identical_error_streak,
+            &mut stuck_on_errors,
+            session,
+            query,
+            config,
+            &usage,
+            streamed.streamed_content,
+        )
+        .await?
+        {
             return Ok(());
         }
-
-        if let Some(content) = message.get("content").and_then(Value::as_str) {
-            let content = content.trim();
-            if !content.is_empty() {
-                sink.emit(AgentEvent::Assistant(content.into()));
-            }
-        }
-
-        messages.push(message);
-        for call in calls {
-            let id = call
-                .get("id")
-                .and_then(Value::as_str)
-                .unwrap_or("tool-call");
-            let function = call.get("function").cloned().unwrap_or_default();
-            let name = function
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            let arguments = function
-                .get("arguments")
-                .and_then(Value::as_str)
-                .unwrap_or("{}");
-            let preview = tool_arg_preview(name, arguments);
-            sink.emit(AgentEvent::Tool {
-                name: name.into(),
-                preview: preview.clone(),
-            });
-            let observation = match execute_tool(
-                &workspace,
-                name,
-                arguments,
-                term,
-                approval_mode,
-                sink,
-            )
-            .await
-            {
-                Ok(output) => truncate(output, MAX_TOOL_OUTPUT),
-                Err(error) => format!("ERROR: {error:#}"),
-            };
-            let summary = one_line_summary(&observation);
-            sink.emit(AgentEvent::ToolResult(summary.clone()));
-            trace.push(format!("{name}: {summary}"));
-            if observation.starts_with("ERROR:") {
-                let sig = format!("{name}|{summary}");
-                if last_error_sig.as_deref() == Some(sig.as_str()) {
-                    identical_error_streak += 1;
-                } else {
-                    last_error_sig = Some(sig);
-                    identical_error_streak = 1;
-                }
-                if identical_error_streak >= MAX_IDENTICAL_ERRORS {
-                    stuck_on_errors = true;
-                }
-            } else {
-                last_error_sig = None;
-                identical_error_streak = 0;
-            }
-            messages.push(json!({
-                "role": "tool",
-                "tool_call_id": id,
-                "content": observation
-            }));
-        }
-        // Persist a crash-safe progress snapshot without mutating the live session yet.
-        persist_progress_snapshot(session, query, &trace);
         if stuck_on_errors {
             sink.emit(AgentEvent::Warn(format!(
                 "Stopped after {MAX_IDENTICAL_ERRORS} identical tool errors."
             )));
             break;
+        }
+        if cancelled(&options) {
+            sink.emit(AgentEvent::Cancelled);
+            let note = "Cancelled by user.";
+            finish_session(session, query, note, config.max_context_messages, &usage)?;
+            print_usage(config, &usage, session, sink);
+            return Ok(());
         }
     }
 
@@ -409,6 +425,282 @@ fn print_usage(config: &Config, usage: &TokenUsage, session: &Session, sink: &mu
         )
     };
     sink.emit(AgentEvent::Usage(line));
+}
+
+struct StreamedTurn {
+    message: Value,
+    usage: TokenUsage,
+    /// True if content deltas were already streamed to the sink.
+    streamed_content: bool,
+}
+
+#[derive(Default)]
+struct ToolCallAcc {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+/// Returns true if the turn finished (no tools / session saved).
+async fn handle_assistant_message(
+    message: Value,
+    workspace: &Workspace,
+    term: &TerminalState,
+    approval_mode: ApprovalMode,
+    sink: &mut dyn EventSink,
+    messages: &mut Vec<Value>,
+    trace: &mut Vec<String>,
+    last_error_sig: &mut Option<String>,
+    identical_error_streak: &mut usize,
+    stuck_on_errors: &mut bool,
+    session: &mut Session,
+    query: &str,
+    config: &Config,
+    usage: &TokenUsage,
+    already_streamed_content: bool,
+) -> Result<bool> {
+    let calls = message
+        .get("tool_calls")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    if calls.is_empty() {
+        let answer = message
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim();
+        if answer.is_empty() {
+            anyhow::bail!("Agent stopped without a response");
+        }
+        if !already_streamed_content {
+            sink.emit(AgentEvent::Assistant(answer.into()));
+        } else {
+            // End the streamed line cleanly.
+            sink.emit(AgentEvent::AssistantDelta("\n".into()));
+        }
+        finish_session(session, query, answer, config.max_context_messages, usage)?;
+        print_usage(config, usage, session, sink);
+        return Ok(true);
+    }
+
+    if let Some(content) = message.get("content").and_then(Value::as_str) {
+        let content = content.trim();
+        if !content.is_empty() && !already_streamed_content {
+            sink.emit(AgentEvent::Assistant(content.into()));
+        }
+    }
+
+    messages.push(message);
+    for call in calls {
+        let id = call
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("tool-call");
+        let function = call.get("function").cloned().unwrap_or_default();
+        let name = function
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let arguments = function
+            .get("arguments")
+            .and_then(Value::as_str)
+            .unwrap_or("{}");
+        let preview = tool_arg_preview(name, arguments);
+        sink.emit(AgentEvent::Tool {
+            name: name.into(),
+            preview: preview.clone(),
+        });
+        let observation = match execute_tool(
+            workspace,
+            name,
+            arguments,
+            term,
+            approval_mode,
+            sink,
+        )
+        .await
+        {
+            Ok(output) => truncate(output, MAX_TOOL_OUTPUT),
+            Err(error) => format!("ERROR: {error:#}"),
+        };
+        let summary = one_line_summary(&observation);
+        sink.emit(AgentEvent::ToolResult(summary.clone()));
+        trace.push(format!("{name}: {summary}"));
+        if observation.starts_with("ERROR:") {
+            let sig = format!("{name}|{summary}");
+            if last_error_sig.as_deref() == Some(sig.as_str()) {
+                *identical_error_streak += 1;
+            } else {
+                *last_error_sig = Some(sig);
+                *identical_error_streak = 1;
+            }
+            if *identical_error_streak >= MAX_IDENTICAL_ERRORS {
+                *stuck_on_errors = true;
+            }
+        } else {
+            *last_error_sig = None;
+            *identical_error_streak = 0;
+        }
+        messages.push(json!({
+            "role": "tool",
+            "tool_call_id": id,
+            "content": observation
+        }));
+    }
+    persist_progress_snapshot(session, query, trace);
+    Ok(false)
+}
+
+async fn stream_fallback_nonstream(
+    client: &reqwest::Client,
+    url: &str,
+    config: &Config,
+    key: &str,
+    messages: &[Value],
+    cancel: Option<&Arc<AtomicBool>>,
+) -> Result<(Value, TokenUsage)> {
+    if cancel.is_some_and(|f| f.load(Ordering::Relaxed)) {
+        anyhow::bail!("cancelled");
+    }
+    let body = json!({
+        "model": &config.default_model,
+        "messages": messages,
+        "tools": tool_definitions(),
+        "tool_choice": "auto",
+        "stream": false,
+        "temperature": 0.2,
+        "max_tokens": 8192
+    });
+    let builder = client.post(url).json(&body);
+    let builder = crate::api::apply_provider_auth(builder, config.active_provider(), key)?;
+    let response = builder.send().await?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        anyhow::bail!(crate::api::format_http_error(status, &text, url));
+    }
+    let payload: Value = response.json().await.context("Invalid JSON")?;
+    let mut usage = TokenUsage::default();
+    usage.absorb(&payload);
+    let message = payload
+        .pointer("/choices/0/message")
+        .cloned()
+        .context("Missing assistant message")?;
+    Ok((message, usage))
+}
+
+async fn read_chat_stream(
+    response: reqwest::Response,
+    sink: &mut dyn EventSink,
+    cancel: Option<&Arc<AtomicBool>>,
+) -> Result<StreamedTurn> {
+    let mut stream = response.bytes_stream();
+    let mut pending = Vec::<u8>::new();
+    let mut content = String::new();
+    let mut tool_calls: BTreeMap<usize, ToolCallAcc> = BTreeMap::new();
+    let mut usage = TokenUsage::default();
+    let mut streamed_content = false;
+
+    while let Some(chunk) = stream.next().await {
+        if cancel.is_some_and(|f| f.load(Ordering::Relaxed)) {
+            anyhow::bail!("cancelled");
+        }
+        let chunk = chunk.context("Failed reading response stream")?;
+        pending.extend_from_slice(&chunk);
+        while let Some(newline) = pending.iter().position(|b| *b == b'\n') {
+            let line_bytes: Vec<u8> = pending.drain(..=newline).collect();
+            let line = std::str::from_utf8(&line_bytes).context("Invalid UTF-8 in stream")?;
+            let line = line.trim_end_matches(['\r', '\n']);
+            if line.is_empty() || line.starts_with(':') {
+                continue;
+            }
+            let Some(data) = line.strip_prefix("data:") else {
+                continue;
+            };
+            let data = data.trim();
+            if data.is_empty() || data == "[DONE]" {
+                continue;
+            }
+            let Ok(payload) = serde_json::from_str::<Value>(data) else {
+                continue;
+            };
+            usage.absorb(&payload);
+            if let Some(delta) = payload.pointer("/choices/0/delta") {
+                if let Some(piece) = delta.get("content").and_then(Value::as_str) {
+                    if !piece.is_empty() {
+                        content.push_str(piece);
+                        sink.emit(AgentEvent::AssistantDelta(piece.to_string()));
+                        streamed_content = true;
+                    }
+                }
+                if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
+                    for call in calls {
+                        let index = call.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                        let entry = tool_calls.entry(index).or_default();
+                        if let Some(id) = call.get("id").and_then(Value::as_str) {
+                            if !id.is_empty() {
+                                entry.id = id.to_string();
+                            }
+                        }
+                        if let Some(function) = call.get("function") {
+                            if let Some(name) = function.get("name").and_then(Value::as_str) {
+                                if !name.is_empty() {
+                                    entry.name.push_str(name);
+                                }
+                            }
+                            if let Some(args) = function.get("arguments").and_then(Value::as_str) {
+                                entry.arguments.push_str(args);
+                            }
+                        }
+                    }
+                }
+            }
+            // Non-stream shaped chunk some gateways send mid-way.
+            if let Some(message) = payload.pointer("/choices/0/message") {
+                if let Some(piece) = message.get("content").and_then(Value::as_str) {
+                    if content.is_empty() && !piece.is_empty() {
+                        content.push_str(piece);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut tool_call_values = Vec::new();
+    for (index, acc) in tool_calls {
+        let id = if acc.id.is_empty() {
+            format!("call_{index}")
+        } else {
+            acc.id
+        };
+        tool_call_values.push(json!({
+            "id": id,
+            "type": "function",
+            "function": {
+                "name": acc.name,
+                "arguments": if acc.arguments.is_empty() { "{}" } else { &acc.arguments }
+            }
+        }));
+    }
+
+    let mut message = json!({
+        "role": "assistant",
+        "content": if content.is_empty() { Value::Null } else { Value::String(content) },
+    });
+    if !tool_call_values.is_empty() {
+        message
+            .as_object_mut()
+            .unwrap()
+            .insert("tool_calls".into(), Value::Array(tool_call_values));
+    }
+
+    Ok(StreamedTurn {
+        message,
+        usage,
+        streamed_content,
+    })
 }
 
 fn tool_arg_preview(name: &str, arguments: &str) -> String {

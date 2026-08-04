@@ -140,10 +140,7 @@ async fn main() -> Result<()> {
             } else {
                 session::Session::new()?
             };
-            let run_opts = agent::RunOptions {
-                max_steps: options.steps,
-                approval: options.approval,
-            };
+            let run_opts = agent::RunOptions { max_steps: options.steps, approval: options.approval, cancel: None, };
             run_query(&config, mode, &query, &tier, &term, &mut session, run_opts).await?;
         }
         CliAction::Interactive if term.is_tty => {
@@ -190,10 +187,7 @@ async fn main() -> Result<()> {
                 } else {
                     session::Session::new()?
                 };
-                let run_opts = agent::RunOptions {
-                    max_steps: options.steps,
-                    approval: options.approval,
-                };
+                let run_opts = agent::RunOptions { max_steps: options.steps, approval: options.approval, cancel: None, };
                 run_query(
                     &config,
                     RunMode::Chat,
@@ -663,10 +657,7 @@ async fn run_repl(
 
                 println!();
                 let started = std::time::Instant::now();
-                let run_opts = agent::RunOptions {
-                    max_steps: steps_override,
-                    approval: session_approval,
-                };
+                let run_opts = agent::RunOptions { max_steps: steps_override, approval: session_approval, cancel: None, };
                 match run_query(config, mode, input, &ultra_tier, term, &mut session, run_opts)
                     .await
                 {

@@ -19,10 +19,14 @@ pub enum AgentEvent {
     Tool { name: String, preview: String },
     /// One-line tool observation.
     ToolResult(String),
-    /// Final or intermediate assistant text.
+    /// Final or intermediate assistant text (complete block).
     Assistant(String),
+    /// Streaming token/chunk of assistant text (no trailing newline).
+    AssistantDelta(String),
     /// Token / context footer line.
     Usage(String),
+    /// Agent aborted because the user cancelled.
+    Cancelled,
     /// Request interactive approval; respond on the channel.
     NeedApproval {
         description: String,
@@ -57,7 +61,14 @@ impl EventSink for ConsoleSink<'_> {
                 println!("{}", self.term.dim(&format!("  {summary}")));
             }
             AgentEvent::Assistant(text) => println!("{text}"),
+            AgentEvent::AssistantDelta(text) => {
+                print!("{text}");
+                let _ = std::io::stdout().flush();
+            }
             AgentEvent::Usage(text) => println!("{}", self.term.dim(&text)),
+            AgentEvent::Cancelled => {
+                println!("{}", self.term.yellow("Cancelled."));
+            }
             AgentEvent::NeedApproval {
                 description,
                 response,

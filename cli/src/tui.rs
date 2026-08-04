@@ -32,7 +32,8 @@ use ratatui::{
 };
 use std::collections::VecDeque;
 use std::io::{self, Stdout};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 const MAX_CHAT_LINES: usize = 2_000;
@@ -116,6 +117,10 @@ struct App {
     mode: TuiMode,
     /// Messages waiting while the agent is busy (Grok-style queue).
     queue: VecDeque<String>,
+    /// Set by Esc while busy — agent checks between steps / mid-stream.
+    cancel_flag: Option<Arc<AtomicBool>>,
+    /// Last chat line is receiving AssistantDelta tokens.
+    streaming_assistant: bool,
 }
 
 pub async fn run(
@@ -177,6 +182,8 @@ pub async fn run(
         show_completions: false,
         mode: TuiMode::Chat,
         queue: VecDeque::new(),
+        cancel_flag: None,
+        streaming_assistant: false,
     };
 
     for (kind, content) in seed {
@@ -386,19 +393,53 @@ impl App {
                     AgentEvent::ClearStatus => {
                         self.status = None;
                     }
-                    AgentEvent::Notice(text) => self.push_line(LineKind::Notice, text, false),
-                    AgentEvent::Warn(text) => self.push_line(LineKind::Warn, text, false),
+                    AgentEvent::Notice(text) => {
+                        if !text.is_empty() {
+                            self.push_line(LineKind::Notice, text, false);
+                        }
+                    }
+                    AgentEvent::Warn(text) => {
+                        self.streaming_assistant = false;
+                        self.push_line(LineKind::Warn, text, false);
+                    }
                     AgentEvent::Tool { name, preview } => {
+                        self.streaming_assistant = false;
                         let label = human_tool_line(&name, &preview);
                         self.push_line(LineKind::Tool, label, false);
                     }
                     AgentEvent::ToolResult(summary) => {
+                        self.streaming_assistant = false;
                         self.push_line(LineKind::ToolResult, summary, false);
                     }
                     AgentEvent::Assistant(text) => {
+                        self.streaming_assistant = false;
                         self.push_line(LineKind::Assistant, text, true);
                     }
-                    AgentEvent::Usage(text) => self.push_line(LineKind::Usage, text, false),
+                    AgentEvent::AssistantDelta(delta) => {
+                        if delta == "\n" {
+                            self.streaming_assistant = false;
+                        } else if self.streaming_assistant {
+                            if let Some(last) = self.lines.back_mut() {
+                                if last.kind == LineKind::Assistant {
+                                    last.text.push_str(&delta);
+                                } else {
+                                    self.streaming_assistant = true;
+                                    self.push_line(LineKind::Assistant, delta, true);
+                                }
+                            }
+                        } else {
+                            self.streaming_assistant = true;
+                            self.push_line(LineKind::Assistant, delta, true);
+                        }
+                    }
+                    AgentEvent::Usage(text) => {
+                        self.streaming_assistant = false;
+                        self.push_line(LineKind::Usage, text, false);
+                    }
+                    AgentEvent::Cancelled => {
+                        self.streaming_assistant = false;
+                        self.push_line(LineKind::Warn, "Cancelled.".into(), false);
+                    }
                     AgentEvent::NeedApproval {
                         description,
                         response,
@@ -417,6 +458,8 @@ impl App {
                     self.busy = false;
                     self.status = None;
                     self.thinking_since = None;
+                    self.cancel_flag = None;
+                    self.streaming_assistant = false;
                     if let Ok(latest) = Session::load(&self.session.id) {
                         self.session = latest;
                     }
@@ -523,6 +566,17 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Esc => {
             if app.show_completions {
                 app.show_completions = false;
+            } else if app.busy {
+                // Cancel the in-flight agent turn (checked between steps / mid-stream).
+                if let Some(flag) = &app.cancel_flag {
+                    flag.store(true, Ordering::Relaxed);
+                }
+                app.status = Some("Cancelling…".into());
+                app.push_line(
+                    LineKind::Notice,
+                    "Cancel requested — stopping after current model/tool step…".into(),
+                    false,
+                );
             } else if !app.input.is_empty() {
                 app.input.clear();
                 app.cursor = 0;
@@ -531,13 +585,6 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 let n = app.queue.len();
                 app.queue.clear();
                 app.push_line(LineKind::Notice, format!("Cleared {n} queued message(s)."), false);
-            } else if app.busy {
-                app.push_line(
-                    LineKind::Warn,
-                    "Agent is running — Esc again won't cancel mid-turn yet. Queue is empty."
-                        .into(),
-                    false,
-                );
             }
         }
         KeyCode::Tab => {
@@ -1156,6 +1203,9 @@ async fn start_agent_turn(app: &mut App, query: String) -> Result<()> {
     app.turn_started = Some(Instant::now());
     app.status = Some(format!("Thinking · {mode_tag}"));
     app.last_error = None;
+    app.streaming_assistant = false;
+    let cancel = Arc::new(AtomicBool::new(false));
+    app.cancel_flag = Some(Arc::clone(&cancel));
 
     let (tx, rx) = mpsc::channel::<AgentEvent>();
     app.agent_rx = Some(rx);
@@ -1168,6 +1218,7 @@ async fn start_agent_turn(app: &mut App, query: String) -> Result<()> {
             app.status = None;
             app.thinking_since = None;
             app.agent_rx = None;
+            app.cancel_flag = None;
             app.push_line(LineKind::Warn, format!("Error: {err:#}"), false);
             return Ok(());
         }
@@ -1177,6 +1228,7 @@ async fn start_agent_turn(app: &mut App, query: String) -> Result<()> {
     let run_opts = RunOptions {
         max_steps: app.steps_override,
         approval: app.session_approval,
+        cancel: Some(cancel),
     };
     let handle = app.runtime.clone();
     let mode = app.mode;
@@ -1542,8 +1594,9 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
     } else {
         format!(" q:{}", app.queue.len())
     };
+    let esc = if app.busy { "Esc:cancel" } else { "Esc:clear" };
     let text = format!(
-        "Enter{enter}  Ctrl+Enter:now  Alt+Enter:newline  Shift+Tab:{approval}  Tab:/  Esc:clear{q}"
+        "Enter{enter}  Ctrl+Enter:now  Alt+Enter:newline  Shift+Tab:{approval}  Tab:/  {esc}{q}"
     );
     frame.render_widget(
         Paragraph::new(Span::styled(text, Style::default().fg(Color::DarkGray))),
