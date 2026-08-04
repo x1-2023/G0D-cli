@@ -1,6 +1,6 @@
 [package]
 name = "g0d"
-version = "1.16.0"
+version = "1.16.1"
 edition = "2021"
 description = "g0d — G0DM0D3 multi-model coding agent CLI. Like grok but with OpenRouter, multi-provider, GODMODE."
 

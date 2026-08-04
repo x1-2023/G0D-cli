@@ -400,7 +400,7 @@ dependencies = [
 
 [[package]]
 name = "g0d"
-version = "1.16.0"
+version = "1.16.1"
 dependencies = [
  "anyhow",
  "crossterm",

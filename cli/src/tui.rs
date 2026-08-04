@@ -121,6 +121,13 @@ struct App {
     cancel_flag: Option<Arc<AtomicBool>>,
     /// Last chat line is receiving AssistantDelta tokens.
     streaming_assistant: bool,
+    /// Cached header fields so we do not run `git` / read_dir every frame (kills VN IME latency).
+    header_branch: String,
+    header_path: String,
+    header_refreshed: Instant,
+    /// Redraw only when something changed (or slow tick while busy).
+    dirty: bool,
+    last_status_tick: Instant,
 }
 
 pub async fn run(
@@ -184,7 +191,13 @@ pub async fn run(
         queue: VecDeque::new(),
         cancel_flag: None,
         streaming_assistant: false,
+        header_branch: "main".into(),
+        header_path: String::new(),
+        header_refreshed: Instant::now() - Duration::from_secs(60),
+        dirty: true,
+        last_status_tick: Instant::now(),
     };
+    app.refresh_header_cache(true);
 
     for (kind, content) in seed {
         app.push_line(kind, content, false);
@@ -194,8 +207,9 @@ pub async fn run(
         app.push_line(
             LineKind::System,
             format!(
-                "g0d {} · Shift+Tab ask/always-approve · Enter queue/send · Ctrl+Enter now · / for commands.",
-                env!("CARGO_PKG_VERSION")
+                "g0d {} · Shift+Tab ask/always-approve · Enter queue/send · Esc cancel · max {} agent steps (/steps).",
+                env!("CARGO_PKG_VERSION"),
+                app.config.max_agent_steps
             ),
             false,
         );
@@ -221,7 +235,12 @@ async fn app_loop(
     app: &mut App,
 ) -> Result<()> {
     while !app.exit {
+        let before_busy = app.busy;
         app.drain_agent_events();
+        if app.busy != before_busy {
+            app.dirty = true;
+        }
+
         // When the agent finishes, automatically start the next queued message.
         if !app.busy && !app.queue.is_empty() && app.pending_approval.is_none() {
             if let Some(next) = app.queue.pop_front() {
@@ -231,17 +250,40 @@ async fn app_loop(
                     false,
                 );
                 start_agent_turn(app, next).await?;
+                app.dirty = true;
             }
         }
-        terminal.draw(|frame| draw(frame, app))?;
 
-        // Poll UI events; keep loop responsive while agent runs.
-        if event::poll(Duration::from_millis(80)).context("TUI event poll failed")? {
+        // Drain *all* pending keys before redraw — critical for Vietnamese IME (many events/key).
+        while event::poll(Duration::from_millis(0)).context("TUI event poll failed")? {
             if let Event::Key(key) = event::read().context("TUI event read failed")? {
-                if key.kind == KeyEventKind::Press || key.kind == KeyEventKind::Repeat {
+                // Ignore key-repeat for text input lag; still allow Press.
+                if key.kind == KeyEventKind::Press {
                     handle_key(app, key).await?;
+                    app.dirty = true;
                 }
             }
+        }
+
+        // Thinking spinner only needs a slow tick, not a full git refresh at 12Hz.
+        let status_tick = app.busy && app.last_status_tick.elapsed() >= Duration::from_millis(200);
+        if status_tick {
+            app.last_status_tick = Instant::now();
+            app.dirty = true;
+        }
+
+        if app.dirty {
+            app.refresh_header_cache(false);
+            terminal.draw(|frame| draw(frame, app))?;
+            app.dirty = false;
+        } else {
+            // Sleep until input or short timeout while agent is running.
+            let wait = if app.busy {
+                Duration::from_millis(50)
+            } else {
+                Duration::from_millis(120)
+            };
+            let _ = event::poll(wait);
         }
     }
     // Persist session on clean exit.
@@ -263,6 +305,22 @@ impl App {
             self.lines.pop_front();
         }
         self.scroll = 0;
+        self.dirty = true;
+    }
+
+    fn refresh_header_cache(&mut self, force: bool) {
+        if !force && self.header_refreshed.elapsed() < Duration::from_secs(3) {
+            return;
+        }
+        let project = context::read_context();
+        self.header_branch = project.git_branch.unwrap_or_else(|| "main".into());
+        let path = project.cwd;
+        self.header_path = if path.len() > 48 {
+            format!("…{}", &path[path.len().saturating_sub(47)..])
+        } else {
+            path
+        };
+        self.header_refreshed = Instant::now();
     }
 
     fn refresh_completions(&mut self) {
@@ -658,7 +716,13 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
             // Allow composing the next message while the agent is still working.
             app.input.insert(app.cursor, c);
             app.cursor += c.len_utf8();
-            app.refresh_completions();
+            // Only rebuild slash menu when editing a command — skip for Vietnamese prose.
+            if app.input.starts_with('/') {
+                app.refresh_completions();
+            } else {
+                app.show_completions = false;
+                app.completions.clear();
+            }
         }
         _ => {}
     }
@@ -1390,19 +1454,8 @@ fn draw_completion_popup(frame: &mut Frame, input_area: Rect, app: &App) {
 }
 
 fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
-    let project = context::read_context();
-    let branch = project
-        .git_branch
-        .as_deref()
-        .unwrap_or("main");
-    let path = project.cwd;
-    // Truncate path if needed.
-    let path_short = if path.len() > 48 {
-        format!("…{}", &path[path.len().saturating_sub(47)..])
-    } else {
-        path
-    };
-    let left = format!(" ≡ {branch} {path_short}");
+    // Use cached branch/path — never call git/read_dir on every keystroke.
+    let left = format!(" ≡ {} {}", app.header_branch, app.header_path);
     let right = app.meter_label();
     let spacer = area
         .width
