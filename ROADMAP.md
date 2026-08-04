@@ -58,10 +58,10 @@ Living plan for post-v1.14 work. Priority can shift with user feedback.
 
 | # | Item | Why |
 | --- | --- | --- |
-| 1 | GitHub Actions release pipeline | Makes `irm \| iex` reliable every tag |
+| 1 | ~~Third-party OpenAI-compatible providers~~ **done in 1.15.0** | setup/test/models/auth/headers/endpoint |
 | 2 | Cancel agent mid-turn | Closest Grok parity pain point |
-| 3 | Streaming final answers | Feels much faster in TUI |
-| 4 | SHA256 verify in install-remote | Trust for public install |
+| 3 | Streaming final answers | Feels much faster on slow third-party APIs |
+| 4 | GitHub Actions release + SHA256 | Reliable `irm \| iex` every tag |
 
 ---
 

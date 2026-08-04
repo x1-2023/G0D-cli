@@ -6,7 +6,7 @@ Repo: [github.com/x1-2023/G0D-cli](https://github.com/x1-2023/G0D-cli)
 
 | | |
 | --- | --- |
-| Version | **1.14.1** |
+| Version | **1.15.0** |
 | Platforms | Windows x64 (primary) |
 | License | See repo root |
 
@@ -81,6 +81,55 @@ g0d "inspect the auth flow, fix validation, run tests, show the diff"
 ```
 
 Local models: `ollama` (`127.0.0.1:11434/v1`), `lmstudio` (`127.0.0.1:1234/v1`).
+
+### Third-party OpenAI-compatible API (priority)
+
+Most relays (AI-Box, Together, Groq-compatible, custom `/v1` gateways) work as:
+
+```powershell
+# One-shot setup: id + endpoint + key + model → becomes default
+# In TUI or classic REPL:
+/provider setup aibox https://api.example.com/v1 sk-your-key glm-5.2
+/provider test
+/provider models
+```
+
+Useful commands:
+
+| Command | Purpose |
+| --- | --- |
+| `/provider setup <id> <endpoint> <key> [model]` | Add + key + default + model |
+| `/provider use <id>` | Switch active provider (applies provider `default_model` if set) |
+| `/provider endpoint <id> <url>` | Change base URL only |
+| `/provider key <id> <key>` | Save API key |
+| `/provider auth <id> <bearer\|x-api-key\|raw\|none>` | Auth style for picky gateways |
+| `/provider header <id> <Name> <Value>` | Extra HTTP header |
+| `/provider test [id]` | Ping `/models` or mini chat |
+| `/provider models [id]` | List model ids from the gateway |
+
+CLI one-shot (does not rewrite endpoint on disk):
+
+```powershell
+g0d --provider aibox --endpoint https://api.example.com/v1 --model glm-5.2 "hello"
+```
+
+Config fields per provider (optional in `config.toml`):
+
+```toml
+[[providers]]
+id = "aibox"
+endpoint = "https://api.example.com/v1"
+key_env = "AIBOX_API_KEY"
+# api_key = "sk-..."   # prefer env var
+auth_style = "bearer"  # bearer | x-api-key | raw | none
+chat_path = "/chat/completions"
+models_path = "/models"
+default_model = "glm-5.2"
+# [providers.extra_headers]
+# X-Custom = "value"
+```
+
+**Tip:** endpoint almost always ends with `/v1`. Errors show the full URL + short body + hint (401 key, 404 path, 429 rate limit).
 
 ---
 

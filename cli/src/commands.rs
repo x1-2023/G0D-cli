@@ -60,16 +60,19 @@ pub fn registry() -> Vec<Command> {
         Command {
             name: "/provider",
             aliases: &["/prov"],
-            desc: "Manage API providers",
-            usage: "/provider <list|default|add|remove|key> ...",
+            desc: "Third-party & built-in API providers",
+            usage: "/provider <list|use|setup|add|key|endpoint|auth|header|test|models|remove> ...",
             args: &[
                 ArgHint {
                     desc: "action",
-                    completions: &["list", "default", "add", "remove", "key"],
+                    completions: &[
+                        "list", "use", "default", "setup", "add", "key", "endpoint", "auth",
+                        "header", "test", "models", "remove",
+                    ],
                 },
                 ArgHint {
                     desc: "provider",
-                    completions: &["openrouter", "venice", "grok", "ollama", "lmstudio"],
+                    completions: &["openrouter", "venice", "grok", "ollama", "lmstudio", "aibox"],
                 },
             ],
         },

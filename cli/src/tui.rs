@@ -994,11 +994,15 @@ fn handle_tui_provider(app: &mut App, args: &[&str]) -> Result<()> {
             }
             app.push_line(LineKind::System, lines.join("\n"), false);
         }
-        Some("default") => {
-            let id = args.get(1).context("Usage: /provider default <id>")?;
+        Some("default") | Some("use") => {
+            let id = args.get(1).context("Usage: /provider use <id>")?;
             app.config.set_default_provider(id)?;
             app.config.save()?;
-            app.push_line(LineKind::Notice, format!("Provider: {id}"), false);
+            app.push_line(
+                LineKind::Notice,
+                format!("Provider: {id} · model {}", app.config.default_model),
+                false,
+            );
         }
         Some("key") => {
             let id = args.get(1).context("Usage: /provider key <id> <key>")?;
@@ -1017,7 +1021,107 @@ fn handle_tui_provider(app: &mut App, args: &[&str]) -> Result<()> {
             app.config
                 .add_provider(id, endpoint, args.get(3).copied())?;
             app.config.save()?;
-            app.push_line(LineKind::Notice, format!("Added provider {id}."), false);
+            app.push_line(
+                LineKind::Notice,
+                format!("Added provider {id} → {endpoint}"),
+                false,
+            );
+        }
+        Some("setup") => {
+            let id = args
+                .get(1)
+                .context("Usage: /provider setup <id> <endpoint> <api-key> [model]")?;
+            let endpoint = args
+                .get(2)
+                .context("Usage: /provider setup <id> <endpoint> <api-key> [model]")?;
+            let key = args
+                .get(3)
+                .context("Usage: /provider setup <id> <endpoint> <api-key> [model]")?;
+            let model = args.get(4).copied();
+            app.config
+                .setup_provider(id, endpoint, Some(key), model, None)?;
+            app.config.save()?;
+            app.push_line(
+                LineKind::Notice,
+                format!(
+                    "Ready: {id} · {endpoint} · model {}",
+                    app.config.default_model
+                ),
+                false,
+            );
+        }
+        Some("endpoint") => {
+            let id = args
+                .get(1)
+                .context("Usage: /provider endpoint <id> <url>")?;
+            let endpoint = args
+                .get(2)
+                .context("Usage: /provider endpoint <id> <url>")?;
+            app.config.set_provider_endpoint(id, endpoint)?;
+            app.config.save()?;
+            app.push_line(
+                LineKind::Notice,
+                format!("Endpoint {id} → {endpoint}"),
+                false,
+            );
+        }
+        Some("auth") => {
+            let id = args.get(1).context("Usage: /provider auth <id> <style>")?;
+            let style = args.get(2).context("Usage: /provider auth <id> <style>")?;
+            app.config.set_provider_auth_style(id, style)?;
+            app.config.save()?;
+            app.push_line(LineKind::Notice, format!("Auth {id} → {style}"), false);
+        }
+        Some("header") => {
+            let id = args
+                .get(1)
+                .context("Usage: /provider header <id> <Name> <Value>")?;
+            let name = args
+                .get(2)
+                .context("Usage: /provider header <id> <Name> <Value>")?;
+            let value = args
+                .get(3)
+                .context("Usage: /provider header <id> <Name> <Value>")?;
+            app.config.set_provider_header(id, name, value)?;
+            app.config.save()?;
+            app.push_line(LineKind::Notice, format!("Header {id}: {name}"), false);
+        }
+        Some("test") | Some("models") => {
+            // Run async probe on a worker; report via chat lines.
+            let action = args[0].to_string();
+            let switch_id = args.get(1).map(|s| (*s).to_string());
+            let mut cfg = app.config.clone();
+            if let Some(id) = switch_id.as_deref() {
+                cfg.set_default_provider(id)?;
+            }
+            let handle = app.runtime.clone();
+            let result = std::thread::spawn(move || {
+                handle.block_on(async move {
+                    let key = cfg.get_api_key()?;
+                    if action == "test" {
+                        crate::api::test_provider(&cfg, &key).await
+                    } else {
+                        let models = crate::api::list_models(&cfg, &key).await?;
+                        Ok(format!(
+                            "{} models · {}",
+                            models.len(),
+                            models.iter().take(20).cloned().collect::<Vec<_>>().join(", ")
+                        ))
+                    }
+                })
+            })
+            .join()
+            .map_err(|_| anyhow::anyhow!("provider probe thread failed"))?;
+            match result {
+                Ok(msg) => {
+                    if let Some(id) = switch_id.as_deref() {
+                        app.config.set_default_provider(id)?;
+                        app.config.save()?;
+                    }
+                    app.push_line(LineKind::Notice, msg, false);
+                }
+                Err(err) => app.push_line(LineKind::Warn, format!("{err:#}"), false),
+            }
         }
         Some("remove") => {
             let id = args.get(1).context("Usage: /provider remove <id>")?;
@@ -1027,7 +1131,9 @@ fn handle_tui_provider(app: &mut App, args: &[&str]) -> Result<()> {
         }
         Some(action) => app.push_line(
             LineKind::Warn,
-            format!("Unknown provider action: {action}. Try list|default|add|remove|key"),
+            format!(
+                "Unknown action: {action}. Try list|use|setup|add|key|endpoint|auth|header|test|models|remove"
+            ),
             false,
         ),
     }

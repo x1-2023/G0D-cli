@@ -1,4 +1,5 @@
 mod agent;
+mod api;
 mod commands;
 mod config;
 mod context;
@@ -65,6 +66,8 @@ struct CliOptions {
     classic: bool,
     provider: Option<String>,
     model: Option<String>,
+    /// Process-only base URL override for third-party gateways (not persisted).
+    endpoint: Option<String>,
     approval: Option<config::ApprovalMode>,
     resume: Option<String>,
     /// Per-process agent step budget override (not persisted).
@@ -108,6 +111,9 @@ async fn main() -> Result<()> {
     }
     if let Some(approval) = options.approval {
         config.approval_mode = approval;
+    }
+    if let Some(endpoint) = options.endpoint.clone() {
+        config.endpoint_override = Some(endpoint);
     }
     if persist_selection {
         config.save()?;
@@ -213,6 +219,7 @@ fn parse_cli_args(args: &[String]) -> Result<CliOptions> {
     let mut classic = false;
     let mut provider = None;
     let mut model = None;
+    let mut endpoint = None;
     let mut approval = None;
     let mut resume = None;
     let mut steps = None;
@@ -232,6 +239,7 @@ fn parse_cli_args(args: &[String]) -> Result<CliOptions> {
                     classic,
                     provider,
                     model,
+                    endpoint,
                     approval,
                     resume,
                     steps,
@@ -245,6 +253,7 @@ fn parse_cli_args(args: &[String]) -> Result<CliOptions> {
                     classic,
                     provider,
                     model,
+                    endpoint,
                     approval,
                     resume,
                     steps,
@@ -258,6 +267,7 @@ fn parse_cli_args(args: &[String]) -> Result<CliOptions> {
                     classic,
                     provider,
                     model,
+                    endpoint,
                     approval,
                     resume,
                     steps,
@@ -271,6 +281,7 @@ fn parse_cli_args(args: &[String]) -> Result<CliOptions> {
                     classic,
                     provider,
                     model,
+                    endpoint,
                     approval,
                     resume,
                     steps,
@@ -310,6 +321,10 @@ fn parse_cli_args(args: &[String]) -> Result<CliOptions> {
                 index += 1;
                 model = Some(required_value(args, index, "--model")?.to_string());
             }
+            "--endpoint" => {
+                index += 1;
+                endpoint = Some(required_value(args, index, "--endpoint")?.to_string());
+            }
             "-k" | "--key" => {
                 index += 1;
                 let key = required_value(args, index, argument)?.to_string();
@@ -320,6 +335,7 @@ fn parse_cli_args(args: &[String]) -> Result<CliOptions> {
                     classic,
                     provider,
                     model,
+                    endpoint,
                     approval,
                     resume,
                     steps,
@@ -335,6 +351,7 @@ fn parse_cli_args(args: &[String]) -> Result<CliOptions> {
                     classic,
                     provider,
                     model,
+                    endpoint,
                     approval,
                     resume,
                     steps,
@@ -384,7 +401,7 @@ fn parse_cli_args(args: &[String]) -> Result<CliOptions> {
         }
     };
     Ok(options(
-        action, headless, no_color, classic, provider, model, approval, resume, steps,
+        action, headless, no_color, classic, provider, model, endpoint, approval, resume, steps,
     ))
 }
 
@@ -395,6 +412,7 @@ fn options(
     classic: bool,
     provider: Option<String>,
     model: Option<String>,
+    endpoint: Option<String>,
     approval: Option<config::ApprovalMode>,
     resume: Option<String>,
     steps: Option<usize>,
@@ -406,6 +424,7 @@ fn options(
         classic,
         provider,
         model,
+        endpoint,
         approval,
         resume,
         steps,
@@ -632,7 +651,9 @@ async fn run_repl(
                                 &session,
                                 &parts,
                                 term,
-                            )? {
+                            )
+                            .await?
+                            {
                                 break;
                             }
                         }
@@ -680,7 +701,7 @@ async fn run_repl(
     Ok(())
 }
 
-fn handle_slash(
+async fn handle_slash(
     config: &mut config::Config,
     mode: &mut RunMode,
     ultra_tier: &mut String,
@@ -732,7 +753,7 @@ fn handle_slash(
             config.save()?;
             println!("{}", term.green(&format!("Saved key for {provider}.")));
         }
-        "/provider" => handle_provider(config, &parts[1..], term)?,
+        "/provider" => handle_provider_async(config, &parts[1..], term).await?,
         "/providers" => print_providers(config, term),
         "/config" => print_config(config, parts.get(1).copied(), term),
         "/context" => print_context(config, session, term),
@@ -842,11 +863,19 @@ fn handle_provider(
 ) -> Result<()> {
     match args.first().copied() {
         None | Some("list") => print_providers(config, term),
-        Some("default") => {
-            let id = args.get(1).context("Usage: /provider default <id>")?;
+        Some("default") | Some("use") => {
+            let id = args
+                .get(1)
+                .context("Usage: /provider use <id>  (alias: default)")?;
             config.set_default_provider(id)?;
             config.save()?;
-            println!("{}", term.green(&format!("Provider: {id}")));
+            println!(
+                "{}",
+                term.green(&format!(
+                    "Provider: {id} · model {}",
+                    config.default_model
+                ))
+            );
         }
         Some("key") => {
             let id = args.get(1).context("Usage: /provider key <id> <key>")?;
@@ -864,7 +893,65 @@ fn handle_provider(
                 .context("Usage: /provider add <id> <endpoint> [key-env]")?;
             config.add_provider(id, endpoint, args.get(3).copied())?;
             config.save()?;
-            println!("{}", term.green(&format!("Added provider {id}.")));
+            println!("{}", term.green(&format!("Added provider {id} → {endpoint}")));
+        }
+        Some("setup") => {
+            // /provider setup <id> <endpoint> <api-key> [model]
+            let id = args
+                .get(1)
+                .context("Usage: /provider setup <id> <endpoint> <api-key> [model]")?;
+            let endpoint = args
+                .get(2)
+                .context("Usage: /provider setup <id> <endpoint> <api-key> [model]")?;
+            let key = args
+                .get(3)
+                .context("Usage: /provider setup <id> <endpoint> <api-key> [model]")?;
+            let model = args.get(4).copied();
+            config.setup_provider(id, endpoint, Some(key), model, None)?;
+            config.save()?;
+            println!(
+                "{}",
+                term.green(&format!(
+                    "Ready: provider={id} endpoint={endpoint} model={}",
+                    config.default_model
+                ))
+            );
+        }
+        Some("endpoint") => {
+            let id = args
+                .get(1)
+                .context("Usage: /provider endpoint <id> <url>")?;
+            let endpoint = args
+                .get(2)
+                .context("Usage: /provider endpoint <id> <url>")?;
+            config.set_provider_endpoint(id, endpoint)?;
+            config.save()?;
+            println!("{}", term.green(&format!("Endpoint {id} → {endpoint}")));
+        }
+        Some("auth") => {
+            let id = args
+                .get(1)
+                .context("Usage: /provider auth <id> <bearer|x-api-key|raw|none>")?;
+            let style = args
+                .get(2)
+                .context("Usage: /provider auth <id> <bearer|x-api-key|raw|none>")?;
+            config.set_provider_auth_style(id, style)?;
+            config.save()?;
+            println!("{}", term.green(&format!("Auth style {id} → {style}")));
+        }
+        Some("header") => {
+            let id = args
+                .get(1)
+                .context("Usage: /provider header <id> <Name> <Value>")?;
+            let name = args
+                .get(2)
+                .context("Usage: /provider header <id> <Name> <Value>")?;
+            let value = args
+                .get(3)
+                .context("Usage: /provider header <id> <Name> <Value>")?;
+            config.set_provider_header(id, name, value)?;
+            config.save()?;
+            println!("{}", term.green(&format!("Header {id}: {name}")));
         }
         Some("remove") => {
             let id = args.get(1).context("Usage: /provider remove <id>")?;
@@ -872,7 +959,56 @@ fn handle_provider(
             config.save()?;
             println!("{}", term.green(&format!("Removed provider {id}.")));
         }
-        Some(action) => anyhow::bail!("Unknown provider action: {action}"),
+        Some(action) => anyhow::bail!(
+            "Unknown provider action: {action}. Try list|use|add|setup|key|endpoint|auth|header|test|models|remove"
+        ),
+    }
+    Ok(())
+}
+
+async fn handle_provider_async(
+    config: &mut config::Config,
+    args: &[&str],
+    term: &terminal::TerminalState,
+) -> Result<()> {
+    match args.first().copied() {
+        Some("test") => {
+            if let Some(id) = args.get(1) {
+                config.set_default_provider(id)?;
+                config.save()?;
+            }
+            let key = config.get_api_key()?;
+            let result = api::test_provider(config, &key).await?;
+            println!("{}", term.green(&result));
+        }
+        Some("models") => {
+            if let Some(id) = args.get(1) {
+                config.set_default_provider(id)?;
+                config.save()?;
+            }
+            let key = config.get_api_key()?;
+            let models = api::list_models(config, &key).await?;
+            println!(
+                "{}",
+                term.bold(&format!(
+                    "{} models from {}",
+                    models.len(),
+                    api::models_url(config)
+                ))
+            );
+            for model in models.iter().take(80) {
+                let mark = if *model == config.default_model {
+                    "*"
+                } else {
+                    " "
+                };
+                println!(" {mark} {model}");
+            }
+            if models.len() > 80 {
+                println!("  … {} more", models.len() - 80);
+            }
+        }
+        _ => handle_provider(config, args, term)?,
     }
     Ok(())
 }
@@ -904,12 +1040,7 @@ async fn run_query(
 }
 
 fn api_client() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(15))
-        .timeout(std::time::Duration::from_secs(180))
-        .user_agent(format!("g0d/{VERSION}"))
-        .build()
-        .context("Could not create HTTP client")
+    api::http_client()
 }
 
 async fn run_chat(
@@ -920,10 +1051,7 @@ async fn run_chat(
     session: &mut Vec<Value>,
 ) -> Result<()> {
     let client = api_client()?;
-    let url = format!(
-        "{}/chat/completions",
-        config.active_provider().endpoint.trim_end_matches('/')
-    );
+    let url = api::chat_completions_url(config);
     let project = context::read_context();
     let language = match config.lang.as_str() {
         "vi" => "Reply in Vietnamese.",
@@ -946,16 +1074,17 @@ async fn run_chat(
     });
 
     let indicator = status::StatusIndicator::start("Thinking");
-    let response = client
-        .post(url)
-        .bearer_auth(key)
+    let builder = client
+        .post(&url)
         .header("Content-Type", "application/json")
-        .json(&body)
+        .json(&body);
+    let builder = api::apply_provider_auth(builder, config.active_provider(), key)?;
+    let response = builder
         .send()
         .await
-        .context("API request failed")?;
+        .with_context(|| format!("API request failed ({url})"))?;
     indicator.stop();
-    let response = ensure_success(response).await?;
+    let response = ensure_success(response, &url).await?;
     let is_event_stream = response
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
@@ -1038,14 +1167,13 @@ fn parse_sse_line(line: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-async fn ensure_success(response: reqwest::Response) -> Result<reqwest::Response> {
+async fn ensure_success(response: reqwest::Response, url: &str) -> Result<reqwest::Response> {
     if response.status().is_success() {
         return Ok(response);
     }
     let status = response.status();
     let body = response.text().await.unwrap_or_default();
-    let message: String = body.chars().take(1000).collect();
-    anyhow::bail!("HTTP {status}: {message}")
+    anyhow::bail!(api::format_http_error(status, &body, url))
 }
 
 async fn run_parseltongue(
@@ -1071,10 +1199,8 @@ async fn run_godmode(
     term: &terminal::TerminalState,
 ) -> Result<()> {
     let client = api_client()?;
-    let url = format!(
-        "{}/chat/completions",
-        config.active_provider().endpoint.trim_end_matches('/')
-    );
+    let url = api::chat_completions_url(config);
+    let provider = config.active_provider().clone();
     let presets = xai_grok_godmode::config::default_presets();
     let indicator = status::StatusIndicator::start("Racing 5 candidates");
     let mut tasks = Vec::new();
@@ -1084,6 +1210,7 @@ async fn run_godmode(
         let key = key.to_string();
         let query = query.to_string();
         let url = url.clone();
+        let provider = provider.clone();
         tasks.push(tokio::spawn(async move {
             let body = json!({
                 "model": preset.model,
@@ -1094,7 +1221,9 @@ async fn run_godmode(
                 "temperature": preset.temperature,
                 "max_tokens": 4096
             });
-            let response = client.post(url).bearer_auth(key).json(&body).send().await.map_err(|error| error.to_string())?;
+            let builder = client.post(&url).json(&body);
+            let builder = api::apply_provider_auth(builder, &provider, &key).map_err(|e| e.to_string())?;
+            let response = builder.send().await.map_err(|error| error.to_string())?;
             if !response.status().is_success() { return Err(format!("HTTP {}", response.status())); }
             let payload: Value = response.json().await.map_err(|error| error.to_string())?;
             let content = payload.pointer("/choices/0/message/content").and_then(Value::as_str).unwrap_or_default().to_string();
@@ -1146,10 +1275,8 @@ async fn run_ultra(
     let models = xai_grok_godmode::tier_models(&tier);
     let selected: Vec<_> = models.into_iter().take(8).collect();
     let client = api_client()?;
-    let url = format!(
-        "{}/chat/completions",
-        config.active_provider().endpoint.trim_end_matches('/')
-    );
+    let url = api::chat_completions_url(config);
+    let provider = config.active_provider().clone();
     let indicator =
         status::StatusIndicator::start(&format!("{} · {} models", tier.label(), selected.len()));
     let mut tasks = Vec::new();
@@ -1159,9 +1286,12 @@ async fn run_ultra(
         let key = key.to_string();
         let query = query.to_string();
         let url = url.clone();
+        let provider = provider.clone();
         tasks.push(tokio::spawn(async move {
             let body = json!({"model": model, "messages": [{"role": "user", "content": query}], "temperature": 0.3, "max_tokens": 2048});
-            let response = client.post(url).bearer_auth(key).json(&body).send().await.map_err(|error| error.to_string())?;
+            let builder = client.post(&url).json(&body);
+            let builder = api::apply_provider_auth(builder, &provider, &key).map_err(|e| e.to_string())?;
+            let response = builder.send().await.map_err(|error| error.to_string())?;
             if !response.status().is_success() { return Err(format!("{model}: HTTP {}", response.status())); }
             let payload: Value = response.json().await.map_err(|error| error.to_string())?;
             let content = payload.pointer("/choices/0/message/content").and_then(Value::as_str).unwrap_or_default().to_string();
@@ -1238,7 +1368,7 @@ fn print_cli_help(term: &terminal::TerminalState) -> Result<()> {
     );
     println!("\nUSAGE\n  g0d [OPTIONS] [QUERY]\n");
     println!("MODES\n  -g, --godmode        Race five candidates\n  -p, --snake          Parseltongue mode\n  -u, --ultra          ULTRAPLINIAN mode\n      --tier <TIER>     fast|standard|smart|power|ultra\n");
-    println!("OPTIONS\n      --provider <ID>  Select and persist provider\n      --model <ID>     Select and persist model\n  -k, --key <KEY>      Save key for active provider\n      --language <LANG> auto|vi|en\n      --models         List model tiers\n      --config         Print config path\n      --headless       Disable interactive terminal behavior\n      --classic        Classic reedline REPL instead of Grok-style TUI\n      --no-color       Disable ANSI color\n  -h, --help           Show help\n  -V, --version        Show version\n");
+    println!("OPTIONS\n      --provider <ID>  Select and persist provider\n      --model <ID>     Select and persist model\n      --endpoint <URL> One-shot base URL override (third-party, not saved)\n  -k, --key <KEY>      Save key for active provider\n      --language <LANG> auto|vi|en\n      --models         List model tiers\n      --config         Print config path\n      --headless       Disable interactive terminal behavior\n      --classic        Classic reedline REPL instead of Grok-style TUI\n      --no-color       Disable ANSI color\n  -h, --help           Show help\n  -V, --version        Show version\n");
     println!("AGENT\n      --approval MODE  Persist on (ask) or off (automatic)\n      --steps N        Override max agent steps for this process (1-50)\n      --resume[=ID]    Resume latest or a workspace session\n");
     println!("TOOLS\n  list/glob/search/read · replace/create/write/delete/rename · apply_patch · run_command · git status/diff/log/add/commit\n");
     println!(

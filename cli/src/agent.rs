@@ -135,16 +135,8 @@ pub async fn run(
     let mut messages = vec![json!({"role": "system", "content": system})];
     messages.extend(session.messages.iter().cloned());
     messages.push(json!({"role": "user", "content": query}));
-    let client = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(15))
-        .timeout(std::time::Duration::from_secs(180))
-        .user_agent(format!("g0d/{}", env!("CARGO_PKG_VERSION")))
-        .build()
-        .context("Could not create HTTP client")?;
-    let url = format!(
-        "{}/chat/completions",
-        config.active_provider().endpoint.trim_end_matches('/')
-    );
+    let client = crate::api::http_client()?;
+    let url = crate::api::chat_completions_url(config);
 
     let mut usage = TokenUsage::default();
     let mut trace = Vec::new();
@@ -159,29 +151,28 @@ pub async fn run(
         };
         sink.emit(AgentEvent::Status(status_label.clone()));
         let indicator = status::StatusIndicator::start(&status_label);
-        let response = client
-            .post(&url)
-            .bearer_auth(key)
-            .json(&json!({
-                "model": &config.default_model,
-                "messages": messages,
-                "tools": tool_definitions(),
-                "tool_choice": "auto",
-                "stream": false,
-                "temperature": 0.2,
-                "max_tokens": 8192
-            }))
+        let body = json!({
+            "model": &config.default_model,
+            "messages": messages,
+            "tools": tool_definitions(),
+            "tool_choice": "auto",
+            "stream": false,
+            "temperature": 0.2,
+            "max_tokens": 8192
+        });
+        let builder = client.post(&url).json(&body);
+        let builder = crate::api::apply_provider_auth(builder, config.active_provider(), key)?;
+        let response = builder
             .send()
             .await
-            .context("Agent API request failed")?;
+            .with_context(|| format!("Agent API request failed ({url})"))?;
         indicator.stop();
         sink.emit(AgentEvent::ClearStatus);
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            let detail: String = body.chars().take(1500).collect();
-            anyhow::bail!("Agent API HTTP {status}: {detail}");
+            anyhow::bail!(crate::api::format_http_error(status, &body, &url));
         }
 
         let payload: Value = response
@@ -299,19 +290,20 @@ pub async fn run(
         action. Clearly state that the task is incomplete."
     };
     messages.push(json!({"role": "user", "content": checkpoint_instruction}));
-    let checkpoint = match client
-        .post(&url)
-        .bearer_auth(key)
-        .json(&json!({
-            "model": &config.default_model,
-            "messages": messages,
-            "tool_choice": "none",
-            "stream": false,
-            "temperature": 0.1,
-            "max_tokens": 1400
-        }))
-        .send()
-        .await
+    let checkpoint_body = json!({
+        "model": &config.default_model,
+        "messages": messages,
+        "tool_choice": "none",
+        "stream": false,
+        "temperature": 0.1,
+        "max_tokens": 1400
+    });
+    let checkpoint = match (async {
+        let builder = client.post(&url).json(&checkpoint_body);
+        let builder = crate::api::apply_provider_auth(builder, config.active_provider(), key)?;
+        builder.send().await.map_err(anyhow::Error::from)
+    })
+    .await
     {
         Ok(response) if response.status().is_success() => {
             if let Ok(payload) = response.json::<Value>().await {

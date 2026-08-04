@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,6 +23,9 @@ pub struct Config {
     #[serde(default = "default_keep_recent_messages")]
     pub keep_recent_messages: usize,
     pub approval_mode: ApprovalMode,
+    /// Process-only endpoint override (CLI `--endpoint`). Never written to disk.
+    #[serde(skip)]
+    pub endpoint_override: Option<String>,
 }
 
 fn default_max_agent_steps() -> usize {
@@ -63,6 +67,7 @@ impl ApprovalMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderEntry {
     pub id: String,
+    /// Base URL, usually ending in `/v1` for OpenAI-compatible gateways.
     pub endpoint: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
@@ -72,6 +77,25 @@ pub struct ProviderEntry {
     pub enabled: bool,
     #[serde(default)]
     pub is_local: bool,
+    /// Path appended to endpoint for chat (default `/chat/completions`).
+    #[serde(default = "default_chat_path")]
+    pub chat_path: String,
+    /// Path for model listing (default `/models`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub models_path: Option<String>,
+    /// `bearer` (default) | `x-api-key` | `api-key` | `raw` | `none`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_style: Option<String>,
+    /// Extra HTTP headers for picky third-party gateways.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extra_headers: BTreeMap<String, String>,
+    /// Preferred model when switching to this provider via `/provider use`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
+}
+
+fn default_chat_path() -> String {
+    "/chat/completions".into()
 }
 
 fn default_true() -> bool {
@@ -91,6 +115,7 @@ impl Default for Config {
             auto_compact: true,
             keep_recent_messages: default_keep_recent_messages(),
             approval_mode: ApprovalMode::On,
+            endpoint_override: None,
         }
     }
 }
@@ -213,19 +238,93 @@ impl Config {
 
     pub fn add_provider(&mut self, id: &str, endpoint: &str, key_env: Option<&str>) -> Result<()> {
         validate_provider_id(id)?;
-        validate_endpoint(endpoint)?;
+        let endpoint = normalize_endpoint(endpoint)?;
         self.providers.retain(|provider| provider.id != id);
         let is_local = endpoint.contains("localhost")
             || endpoint.contains("127.0.0.1")
             || endpoint.contains("0.0.0.0");
         self.providers.push(ProviderEntry {
             id: id.into(),
-            endpoint: endpoint.trim_end_matches('/').into(),
+            endpoint,
             api_key: None,
             key_env: key_env.map(str::to_string),
             enabled: true,
             is_local,
+            chat_path: default_chat_path(),
+            models_path: None,
+            auth_style: None,
+            extra_headers: BTreeMap::new(),
+            default_model: None,
         });
+        Ok(())
+    }
+
+    /// One-shot third-party setup: add/update provider, key, optional model, make default.
+    pub fn setup_provider(
+        &mut self,
+        id: &str,
+        endpoint: &str,
+        key: Option<&str>,
+        model: Option<&str>,
+        key_env: Option<&str>,
+    ) -> Result<()> {
+        self.add_provider(id, endpoint, key_env.or(Some(&format!("{}_API_KEY", id.to_ascii_uppercase().replace('-', "_")))))?;
+        if let Some(key) = key.filter(|value| !value.is_empty()) {
+            self.set_provider_key(id, key)?;
+        }
+        if let Some(model) = model.filter(|value| !value.trim().is_empty()) {
+            if let Some(provider) = self.providers.iter_mut().find(|p| p.id == id) {
+                provider.default_model = Some(model.to_string());
+            }
+            self.default_model = model.to_string();
+        }
+        self.set_default_provider(id)?;
+        Ok(())
+    }
+
+    pub fn set_provider_endpoint(&mut self, id: &str, endpoint: &str) -> Result<()> {
+        let endpoint = normalize_endpoint(endpoint)?;
+        let provider = self
+            .providers
+            .iter_mut()
+            .find(|provider| provider.id == id)
+            .with_context(|| format!("Unknown provider: {id}"))?;
+        provider.endpoint = endpoint;
+        provider.is_local = provider.endpoint.contains("localhost")
+            || provider.endpoint.contains("127.0.0.1")
+            || provider.endpoint.contains("0.0.0.0");
+        Ok(())
+    }
+
+    pub fn set_provider_auth_style(&mut self, id: &str, style: &str) -> Result<()> {
+        let style = style.to_ascii_lowercase();
+        if !matches!(
+            style.as_str(),
+            "bearer" | "x-api-key" | "api-key" | "raw" | "none" | "local"
+        ) {
+            anyhow::bail!("auth_style must be bearer|x-api-key|api-key|raw|none");
+        }
+        let provider = self
+            .providers
+            .iter_mut()
+            .find(|provider| provider.id == id)
+            .with_context(|| format!("Unknown provider: {id}"))?;
+        provider.auth_style = Some(style);
+        Ok(())
+    }
+
+    pub fn set_provider_header(&mut self, id: &str, name: &str, value: &str) -> Result<()> {
+        if name.trim().is_empty() {
+            anyhow::bail!("Header name cannot be empty");
+        }
+        let provider = self
+            .providers
+            .iter_mut()
+            .find(|provider| provider.id == id)
+            .with_context(|| format!("Unknown provider: {id}"))?;
+        provider
+            .extra_headers
+            .insert(name.trim().to_string(), value.to_string());
         Ok(())
     }
 
@@ -242,12 +341,17 @@ impl Config {
     }
 
     pub fn set_default_provider(&mut self, id: &str) -> Result<()> {
-        if !self
+        let provider = self
             .providers
             .iter()
-            .any(|provider| provider.id == id && provider.enabled)
+            .find(|provider| provider.id == id && provider.enabled)
+            .with_context(|| format!("Unknown or disabled provider: {id}"))?;
+        if let Some(model) = provider
+            .default_model
+            .as_deref()
+            .filter(|value| !value.is_empty())
         {
-            anyhow::bail!("Unknown or disabled provider: {id}");
+            self.default_model = model.to_string();
         }
         self.default_provider = id.into();
         Ok(())
@@ -280,8 +384,19 @@ fn builtin_providers() -> Vec<ProviderEntry> {
         key_env: key_env.map(str::to_string),
         enabled: true,
         is_local,
+        chat_path: default_chat_path(),
+        models_path: None,
+        auth_style: None,
+        extra_headers: BTreeMap::new(),
+        default_model: None,
     })
     .collect()
+}
+
+/// Accept `https://host/v1` or bare origin; trim trailing slash.
+pub fn normalize_endpoint(endpoint: &str) -> Result<String> {
+    validate_endpoint(endpoint)?;
+    Ok(endpoint.trim().trim_end_matches('/').to_string())
 }
 
 fn validate_provider_id(id: &str) -> Result<()> {
