@@ -2,9 +2,12 @@ mod agent;
 mod commands;
 mod config;
 mod context;
+mod meter;
+mod output;
 mod session;
 mod status;
 mod terminal;
+mod tui;
 
 use anyhow::{Context, Result};
 use futures::StreamExt;
@@ -58,10 +61,14 @@ struct CliOptions {
     action: CliAction,
     headless: bool,
     no_color: bool,
+    /// Use the classic reedline REPL instead of the Grok-style TUI.
+    classic: bool,
     provider: Option<String>,
     model: Option<String>,
     approval: Option<config::ApprovalMode>,
     resume: Option<String>,
+    /// Per-process agent step budget override (not persisted).
+    steps: Option<usize>,
 }
 
 #[tokio::main]
@@ -127,11 +134,42 @@ async fn main() -> Result<()> {
             } else {
                 session::Session::new()?
             };
-            run_query(&config, mode, &query, &tier, &term, &mut session.messages).await?;
-            session.save()?;
+            let run_opts = agent::RunOptions {
+                max_steps: options.steps,
+                approval: options.approval,
+            };
+            run_query(&config, mode, &query, &tier, &term, &mut session, run_opts).await?;
         }
         CliAction::Interactive if term.is_tty => {
-            run_repl(&mut config, &term, options.resume.as_deref()).await?
+            let session = if let Some(id) = options.resume.as_deref() {
+                session::Session::load(id)?
+            } else {
+                session::Session::new()?
+            };
+            let use_classic = options.classic
+                || std::env::var_os("G0D_CLASSIC").is_some()
+                || std::env::var_os("G0D_REPL").is_some();
+            if use_classic {
+                run_repl(
+                    &mut config,
+                    &term,
+                    Some(session),
+                    options.steps,
+                    options.approval,
+                )
+                .await?
+            } else {
+                tui::run(
+                    config,
+                    session,
+                    term,
+                    tui::TuiOptions {
+                        steps: options.steps,
+                        approval: options.approval,
+                    },
+                )
+                .await?
+            }
         }
         CliAction::Interactive => {
             let mut query = String::new();
@@ -146,16 +184,20 @@ async fn main() -> Result<()> {
                 } else {
                     session::Session::new()?
                 };
+                let run_opts = agent::RunOptions {
+                    max_steps: options.steps,
+                    approval: options.approval,
+                };
                 run_query(
                     &config,
                     RunMode::Chat,
                     query.trim(),
                     "fast",
                     &term,
-                    &mut session.messages,
+                    &mut session,
+                    run_opts,
                 )
                 .await?;
-                session.save()?;
             }
         }
         CliAction::Help | CliAction::Version | CliAction::ConfigPath | CliAction::Models => {
@@ -168,10 +210,12 @@ async fn main() -> Result<()> {
 fn parse_cli_args(args: &[String]) -> Result<CliOptions> {
     let mut headless = false;
     let mut no_color = false;
+    let mut classic = false;
     let mut provider = None;
     let mut model = None;
     let mut approval = None;
     let mut resume = None;
+    let mut steps = None;
     let mut mode = RunMode::Chat;
     let mut tier = "fast".to_string();
     let mut query = Vec::new();
@@ -185,10 +229,12 @@ fn parse_cli_args(args: &[String]) -> Result<CliOptions> {
                     CliAction::Help,
                     headless,
                     no_color,
+                    classic,
                     provider,
                     model,
                     approval,
                     resume,
+                    steps,
                 ))
             }
             "-V" | "--version" => {
@@ -196,10 +242,12 @@ fn parse_cli_args(args: &[String]) -> Result<CliOptions> {
                     CliAction::Version,
                     headless,
                     no_color,
+                    classic,
                     provider,
                     model,
                     approval,
                     resume,
+                    steps,
                 ))
             }
             "--config" => {
@@ -207,10 +255,12 @@ fn parse_cli_args(args: &[String]) -> Result<CliOptions> {
                     CliAction::ConfigPath,
                     headless,
                     no_color,
+                    classic,
                     provider,
                     model,
                     approval,
                     resume,
+                    steps,
                 ))
             }
             "--models" => {
@@ -218,14 +268,17 @@ fn parse_cli_args(args: &[String]) -> Result<CliOptions> {
                     CliAction::Models,
                     headless,
                     no_color,
+                    classic,
                     provider,
                     model,
                     approval,
                     resume,
+                    steps,
                 ))
             }
             "--headless" => headless = true,
             "--no-color" => no_color = true,
+            "--classic" => classic = true,
             "--resume" => resume = Some("latest".into()),
             "--approval" => {
                 index += 1;
@@ -234,6 +287,17 @@ fn parse_cli_args(args: &[String]) -> Result<CliOptions> {
                     index,
                     "--approval",
                 )?)?);
+            }
+            "--steps" => {
+                index += 1;
+                let value = required_value(args, index, "--steps")?;
+                let parsed: usize = value
+                    .parse()
+                    .context("--steps must be an integer between 1 and 50")?;
+                if !(1..=50).contains(&parsed) {
+                    anyhow::bail!("--steps must be between 1 and 50");
+                }
+                steps = Some(parsed);
             }
             "-g" | "--godmode" => mode = RunMode::Godmode,
             "-p" | "--snake" => mode = RunMode::Parseltongue,
@@ -253,10 +317,12 @@ fn parse_cli_args(args: &[String]) -> Result<CliOptions> {
                     CliAction::SaveKey(key),
                     headless,
                     no_color,
+                    classic,
                     provider,
                     model,
                     approval,
                     resume,
+                    steps,
                 ));
             }
             "--language" => {
@@ -266,10 +332,12 @@ fn parse_cli_args(args: &[String]) -> Result<CliOptions> {
                     CliAction::SetLanguage(language),
                     headless,
                     no_color,
+                    classic,
                     provider,
                     model,
                     approval,
                     resume,
+                    steps,
                 ));
             }
             "--tier" => {
@@ -284,6 +352,15 @@ fn parse_cli_args(args: &[String]) -> Result<CliOptions> {
             value if value.starts_with("--resume=") => resume = Some(value[9..].to_string()),
             value if value.starts_with("--approval=") => {
                 approval = Some(config::ApprovalMode::parse(&value[11..])?)
+            }
+            value if value.starts_with("--steps=") => {
+                let parsed: usize = value[8..]
+                    .parse()
+                    .context("--steps must be an integer between 1 and 50")?;
+                if !(1..=50).contains(&parsed) {
+                    anyhow::bail!("--steps must be between 1 and 50");
+                }
+                steps = Some(parsed);
             }
             value if value.starts_with('-') => {
                 anyhow::bail!("Unknown option: {value}. Run g0d --help.")
@@ -307,7 +384,7 @@ fn parse_cli_args(args: &[String]) -> Result<CliOptions> {
         }
     };
     Ok(options(
-        action, headless, no_color, provider, model, approval, resume,
+        action, headless, no_color, classic, provider, model, approval, resume, steps,
     ))
 }
 
@@ -315,19 +392,23 @@ fn options(
     action: CliAction,
     headless: bool,
     no_color: bool,
+    classic: bool,
     provider: Option<String>,
     model: Option<String>,
     approval: Option<config::ApprovalMode>,
     resume: Option<String>,
+    steps: Option<usize>,
 ) -> CliOptions {
     CliOptions {
         action,
         headless,
         no_color,
+        classic,
         provider,
         model,
         approval,
         resume,
+        steps,
     }
 }
 
@@ -340,7 +421,9 @@ fn required_value<'a>(args: &'a [String], index: usize, option: &str) -> Result<
 async fn run_repl(
     config: &mut config::Config,
     term: &terminal::TerminalState,
-    resume: Option<&str>,
+    existing_session: Option<session::Session>,
+    steps_override: Option<usize>,
+    approval_override: Option<config::ApprovalMode>,
 ) -> Result<()> {
     print_banner(config, term);
     let history_path = config::history_path();
@@ -398,12 +481,19 @@ async fn run_repl(
 
     let mut mode = RunMode::Chat;
     let mut ultra_tier = "fast".to_string();
-    let mut session = if let Some(id) = resume {
-        session::Session::load(id)?
-    } else {
-        session::Session::new()?
+    let mut steps_override = steps_override;
+    let mut session_approval = approval_override;
+    let mut session = match existing_session {
+        Some(session) => session,
+        None => session::Session::new()?,
     };
     println!("{}", term.dim(&format!("session {}", session.id)));
+    if let Some(instructions) = &context::read_context().instructions {
+        println!(
+            "{}",
+            term.dim(&format!("project instructions · {}", instructions.source))
+        );
+    }
 
     loop {
         let context = context::read_context();
@@ -411,6 +501,7 @@ async fn run_repl(
             .git_branch
             .map(|branch| format!(" [{branch}]"))
             .unwrap_or_default();
+        let meter = session.meter(config);
         let left = term.dim(&format!(
             "{}{} {} › ",
             current_dir_name(),
@@ -418,9 +509,10 @@ async fn run_repl(
             mode.label()
         ));
         let right = term.dim(&format!(
-            "{} · {}",
+            "{} · {} · {}",
             config.default_provider,
-            compact_model(&config.default_model)
+            compact_model(&config.default_model),
+            meter.short_label()
         ));
         let prompt = DefaultPrompt::new(
             DefaultPromptSegment::Basic(left),
@@ -456,9 +548,14 @@ async fn run_repl(
                             );
                         }
                         Some("/session") => {
+                            let title = session
+                                .title
+                                .as_deref()
+                                .unwrap_or("(untitled)");
                             println!(
-                                "Session: {} · {} messages",
+                                "Session: {} · {} · {} messages",
                                 session.id,
+                                title,
                                 session.messages.len()
                             );
                         }
@@ -468,9 +565,13 @@ async fn run_repl(
                                 println!("No saved sessions for this workspace.");
                             } else {
                                 for saved in sessions.into_iter().take(20) {
+                                    let title = saved
+                                        .title
+                                        .as_deref()
+                                        .unwrap_or("(untitled)");
                                     println!(
-                                        "  {} · {} messages · {}",
-                                        saved.id, saved.messages, saved.updated_at
+                                        "  {} · {} · {} messages · {}",
+                                        saved.id, title, saved.messages, saved.updated_at
                                     );
                                 }
                             }
@@ -478,13 +579,60 @@ async fn run_repl(
                         Some("/resume") => {
                             let id = parts.get(1).copied().unwrap_or("latest");
                             session = session::Session::load(id)?;
+                            let title = session
+                                .title
+                                .as_deref()
+                                .map(|value| format!(" · {value}"))
+                                .unwrap_or_default();
                             println!(
                                 "{}",
-                                term.green(&format!("Resumed session {}.", session.id))
+                                term.green(&format!("Resumed session {}{title}.", session.id))
                             );
                         }
+                        Some("/export") => {
+                            let path = parts
+                                .get(1)
+                                .map(std::path::PathBuf::from)
+                                .unwrap_or_else(|| session.default_export_path());
+                            let written = session.export_markdown(&path)?;
+                            println!(
+                                "{}",
+                                term.green(&format!("Exported session to {}.", written.display()))
+                            );
+                        }
+                        Some("/compact") => {
+                            let force = parts.get(1).is_none_or(|v| *v != "auto");
+                            match session.compact(config, force) {
+                                Some(note) => {
+                                    session.save()?;
+                                    println!("{}", term.green(&note));
+                                    let meter = session.meter(config);
+                                    println!(
+                                        "{}",
+                                        term.dim(&format!(
+                                            "{} {}",
+                                            meter.bar(16),
+                                            meter.short_label()
+                                        ))
+                                    );
+                                }
+                                None => println!(
+                                    "{}",
+                                    term.dim("Context is within budget; nothing compacted.")
+                                ),
+                            }
+                        }
                         _ => {
-                            if !handle_slash(config, &mut mode, &mut ultra_tier, &parts, term)? {
+                            if !handle_slash(
+                                config,
+                                &mut mode,
+                                &mut ultra_tier,
+                                &mut steps_override,
+                                &mut session_approval,
+                                &session,
+                                &parts,
+                                term,
+                            )? {
                                 break;
                             }
                         }
@@ -494,24 +642,30 @@ async fn run_repl(
 
                 println!();
                 let started = std::time::Instant::now();
-                match run_query(
-                    config,
-                    mode,
-                    input,
-                    &ultra_tier,
-                    term,
-                    &mut session.messages,
-                )
-                .await
+                let run_opts = agent::RunOptions {
+                    max_steps: steps_override,
+                    approval: session_approval,
+                };
+                match run_query(config, mode, input, &ultra_tier, term, &mut session, run_opts)
+                    .await
                 {
                     Ok(()) => {
-                        session.save()?;
+                        // Successful agent turns save themselves; reload so titles/progress match disk.
+                        if let Ok(latest) = session::Session::load(&session.id) {
+                            session = latest;
+                        }
                         println!(
                             "{}",
                             term.dim(&format!("done in {:.1}s", started.elapsed().as_secs_f32()))
                         );
                     }
-                    Err(error) => eprintln!("{}", term.red(&format!("Error: {error:#}"))),
+                    Err(error) => {
+                        // Do not overwrite crash-safe progress snapshots written mid-loop.
+                        if let Ok(latest) = session::Session::load(&session.id) {
+                            session = latest;
+                        }
+                        eprintln!("{}", term.red(&format!("Error: {error:#}")));
+                    }
                 }
                 println!();
             }
@@ -530,6 +684,9 @@ fn handle_slash(
     config: &mut config::Config,
     mode: &mut RunMode,
     ultra_tier: &mut String,
+    steps_override: &mut Option<usize>,
+    session_approval: &mut Option<config::ApprovalMode>,
+    session: &session::Session,
     parts: &[&str],
     term: &terminal::TerminalState,
 ) -> Result<bool> {
@@ -548,7 +705,15 @@ fn handle_slash(
 
     match command {
         "/help" => print_repl_help(term),
-        "/status" => print_status(config, *mode, ultra_tier, term),
+        "/status" => print_status(
+            config,
+            session,
+            *mode,
+            ultra_tier,
+            *steps_override,
+            *session_approval,
+            term,
+        ),
         "/model" => {
             if let Some(model) = parts.get(1) {
                 config.default_model = (*model).into();
@@ -570,7 +735,8 @@ fn handle_slash(
         "/provider" => handle_provider(config, &parts[1..], term)?,
         "/providers" => print_providers(config, term),
         "/config" => print_config(config, parts.get(1).copied(), term),
-        "/context" => print_context(term),
+        "/context" => print_context(config, session, term),
+        "/instructions" => print_instructions(term),
         "/language" => {
             let Some(language) = parts.get(1) else {
                 anyhow::bail!("Usage: /language <auto|vi|en>");
@@ -581,11 +747,59 @@ fn handle_slash(
             println!("{}", term.green(&format!("Language: {language}")));
         }
         "/approval" => {
-            if let Some(value) = parts.get(1) {
-                config.approval_mode = config::ApprovalMode::parse(value)?;
-                config.save()?;
+            match parts.get(1).copied() {
+                None => {}
+                Some("session") => match parts.get(2).copied() {
+                    Some("clear" | "reset" | "default") => {
+                        *session_approval = None;
+                    }
+                    Some(value) => {
+                        *session_approval = Some(config::ApprovalMode::parse(value)?);
+                    }
+                    None => anyhow::bail!("Usage: /approval session <on|off|clear>"),
+                },
+                Some(value) => {
+                    config.approval_mode = config::ApprovalMode::parse(value)?;
+                    config.save()?;
+                    *session_approval = None;
+                }
             }
-            println!("Approval: {}", config.approval_mode.label());
+            let effective = session_approval
+                .unwrap_or(config.approval_mode)
+                .label();
+            if let Some(session_mode) = session_approval {
+                println!(
+                    "Approval: {effective} (session override; config={})",
+                    config.approval_mode.label()
+                );
+                let _ = session_mode;
+            } else {
+                println!("Approval: {effective}");
+            }
+        }
+        "/steps" => {
+            if let Some(value) = parts.get(1) {
+                if matches!(*value, "clear" | "reset" | "default") {
+                    *steps_override = None;
+                } else {
+                    let parsed: usize = value
+                        .parse()
+                        .context("Usage: /steps <1-50|clear>")?;
+                    if !(1..=50).contains(&parsed) {
+                        anyhow::bail!("Steps must be between 1 and 50");
+                    }
+                    *steps_override = Some(parsed);
+                }
+            }
+            let effective = steps_override.unwrap_or(config.max_agent_steps);
+            if steps_override.is_some() {
+                println!(
+                    "Agent steps: {effective} (session override; config={})",
+                    config.max_agent_steps
+                );
+            } else {
+                println!("Agent steps: {effective}");
+            }
         }
         "/chat" => {
             *mode = RunMode::Chat;
@@ -608,7 +822,14 @@ fn handle_slash(
             println!("{}", term.cyan(&format!("ULTRAPLINIAN ({ultra_tier})")));
         }
         "/exit" => return Ok(false),
-        "/new" | "/history" | "/clear" | "/session" | "/sessions" | "/resume" => {}
+        "/new"
+        | "/history"
+        | "/clear"
+        | "/session"
+        | "/sessions"
+        | "/resume"
+        | "/export"
+        | "/compact" => {}
         _ => unreachable!("all registry commands must be handled"),
     }
     Ok(true)
@@ -662,13 +883,22 @@ async fn run_query(
     query: &str,
     tier: &str,
     term: &terminal::TerminalState,
-    session: &mut Vec<Value>,
+    session: &mut session::Session,
+    run_opts: agent::RunOptions,
 ) -> Result<()> {
     let key = config.get_api_key()?;
     match mode {
-        RunMode::Chat => agent::run(config, &key, query, term, session).await,
+        RunMode::Chat => {
+            let mut sink = output::ConsoleSink { term };
+            agent::run(config, &key, query, term, session, run_opts, &mut sink).await
+        }
         RunMode::Godmode => run_godmode(config, &key, query, term).await,
-        RunMode::Parseltongue => run_parseltongue(config, &key, query, term, session).await,
+        RunMode::Parseltongue => {
+            run_parseltongue(config, &key, query, term, &mut session.messages).await?;
+            session.ensure_title(query);
+            session.save()?;
+            Ok(())
+        }
         RunMode::Ultra => run_ultra(config, &key, query, tier, term).await,
     }
 }
@@ -983,8 +1213,8 @@ fn print_banner(config: &config::Config, term: &terminal::TerminalState) {
     println!(
         "{}",
         term.dim(&format!(
-            "{} · {} · {}",
-            project.cwd, project.project_type, config.default_model
+            "{} · {} · {} · auto_compact={}",
+            project.cwd, project.project_type, config.default_model, config.auto_compact
         ))
     );
     if config.get_api_key().is_err() {
@@ -1008,10 +1238,11 @@ fn print_cli_help(term: &terminal::TerminalState) -> Result<()> {
     );
     println!("\nUSAGE\n  g0d [OPTIONS] [QUERY]\n");
     println!("MODES\n  -g, --godmode        Race five candidates\n  -p, --snake          Parseltongue mode\n  -u, --ultra          ULTRAPLINIAN mode\n      --tier <TIER>     fast|standard|smart|power|ultra\n");
-    println!("OPTIONS\n      --provider <ID>  Select and persist provider\n      --model <ID>     Select and persist model\n  -k, --key <KEY>      Save key for active provider\n      --language <LANG> auto|vi|en\n      --models         List model tiers\n      --config         Print config path\n      --headless       Disable interactive terminal behavior\n      --no-color       Disable ANSI color\n  -h, --help           Show help\n  -V, --version        Show version\n");
-    println!("AGENT\n      --approval MODE  Persist on (ask) or off (automatic)\n      --resume[=ID]    Resume latest or a workspace session\n");
+    println!("OPTIONS\n      --provider <ID>  Select and persist provider\n      --model <ID>     Select and persist model\n  -k, --key <KEY>      Save key for active provider\n      --language <LANG> auto|vi|en\n      --models         List model tiers\n      --config         Print config path\n      --headless       Disable interactive terminal behavior\n      --classic        Classic reedline REPL instead of Grok-style TUI\n      --no-color       Disable ANSI color\n  -h, --help           Show help\n  -V, --version        Show version\n");
+    println!("AGENT\n      --approval MODE  Persist on (ask) or off (automatic)\n      --steps N        Override max agent steps for this process (1-50)\n      --resume[=ID]    Resume latest or a workspace session\n");
+    println!("TOOLS\n  list/glob/search/read · replace/create/write/delete/rename · apply_patch · run_command · git status/diff/log/add/commit\n");
     println!(
-        "With no query, g0d opens the interactive REPL. Piped stdin is accepted in non-TTY mode."
+        "With no query, g0d opens the Grok-style TUI (use --classic for the old REPL). Piped stdin is accepted in non-TTY mode."
     );
     Ok(())
 }
@@ -1025,8 +1256,11 @@ fn print_repl_help(term: &terminal::TerminalState) {
 
 fn print_status(
     config: &config::Config,
+    session: &session::Session,
     mode: RunMode,
     ultra_tier: &str,
+    steps_override: Option<usize>,
+    session_approval: Option<config::ApprovalMode>,
     term: &terminal::TerminalState,
 ) {
     let provider = config.active_provider();
@@ -1047,6 +1281,9 @@ fn print_status(
     } else {
         "missing"
     };
+    let approval = session_approval.unwrap_or(config.approval_mode);
+    let steps = steps_override.unwrap_or(config.max_agent_steps);
+    let meter = session.meter(config);
     println!(
         "  Mode: {}{}",
         mode.label(),
@@ -1062,10 +1299,68 @@ fn print_status(
         term.dim(&provider.endpoint)
     );
     println!("  Model: {}", config.default_model);
-    println!("  Approval: {}", config.approval_mode.label());
+    if session_approval.is_some() {
+        println!(
+            "  Approval: {} (session; config={})",
+            approval.label(),
+            config.approval_mode.label()
+        );
+    } else {
+        println!("  Approval: {}", approval.label());
+    }
+    if steps_override.is_some() {
+        println!(
+            "  Agent steps: {steps} (session; config={})",
+            config.max_agent_steps
+        );
+    } else {
+        println!("  Agent steps: {steps}");
+    }
+    println!(
+        "  Context: {} {} · est ~{} / {} ({}%) · cap {} msgs · auto_compact={}",
+        meter.bar(16),
+        meter.messages,
+        meter::format_token_count(meter.estimated_tokens),
+        meter::format_token_count(meter.budget),
+        meter.usage_pct().min(100),
+        config.max_context_messages,
+        config.auto_compact
+    );
+    println!(
+        "  Tokens: last p{}/c{} · lifetime p{}/c{} · compact×{}",
+        meter.last_prompt,
+        meter.last_completion,
+        meter.lifetime_prompt,
+        meter.lifetime_completion,
+        meter.compact_count
+    );
     println!("  API key: {key_source} · Language: {}", config.lang);
+    if let Some(instructions) = &context::read_context().instructions {
+        println!("  Instructions: {}", instructions.source);
+    } else {
+        println!("  Instructions: (none)");
+    }
     println!("  Config: {}", config::config_path().display());
     println!("  History: {}", config::history_path().display());
+    println!("  Sessions: {}", config::sessions_dir().display());
+}
+
+fn print_instructions(term: &terminal::TerminalState) {
+    match context::read_context().instructions {
+        Some(instructions) => {
+            println!(
+                "{}",
+                term.bold(&format!("Project instructions · {}", instructions.source))
+            );
+            println!("{}", instructions.body);
+        }
+        None => println!(
+            "{}",
+            term.dim(
+                "No project instructions found. Create AGENTS.md, G0D.md, or .g0d/instructions.md."
+            )
+        ),
+    }
 }
 
 fn print_config(config: &config::Config, action: Option<&str>, term: &terminal::TerminalState) {
@@ -1077,6 +1372,10 @@ fn print_config(config: &config::Config, action: Option<&str>, term: &terminal::
     println!("default_model = {:?}", config.default_model);
     println!("language = {:?}", config.lang);
     println!("max_context_messages = {}", config.max_context_messages);
+    println!("max_agent_steps = {}", config.max_agent_steps);
+    println!("context_token_budget = {}", config.context_token_budget);
+    println!("auto_compact = {}", config.auto_compact);
+    println!("keep_recent_messages = {}", config.keep_recent_messages);
     println!("approval_mode = {:?}", config.approval_mode.label());
     println!("providers:");
     for provider in &config.providers {
@@ -1096,11 +1395,47 @@ fn print_config(config: &config::Config, action: Option<&str>, term: &terminal::
     }
 }
 
-fn print_context(term: &terminal::TerminalState) {
+fn print_context(
+    config: &config::Config,
+    session: &session::Session,
+    term: &terminal::TerminalState,
+) {
+    let meter = session.meter(config);
+    println!("{}", term.bold("Session context window"));
+    println!(
+        "  {} {} · est ~{} / {} tokens ({}%)",
+        meter.bar(20),
+        meter.messages,
+        meter::format_token_count(meter.estimated_tokens),
+        meter::format_token_count(meter.budget),
+        meter.usage_pct().min(100)
+    );
+    println!(
+        "  messages cap {} · keep_recent {} · auto_compact {} · compact×{}",
+        config.max_context_messages,
+        config.keep_recent_messages,
+        config.auto_compact,
+        meter.compact_count
+    );
+    if meter.last_prompt > 0 || meter.last_completion > 0 {
+        println!(
+            "  last API usage: prompt {} · completion {}",
+            meter.last_prompt, meter.last_completion
+        );
+    }
+    if meter.lifetime_prompt > 0 || meter.lifetime_completion > 0 {
+        println!(
+            "  lifetime API usage: prompt {} · completion {}",
+            meter.lifetime_prompt, meter.lifetime_completion
+        );
+    }
+    println!();
     let project = context::read_context();
     println!("{}", term.bold("Project context sent to the model"));
     print!("{}", context::context_summary(&project));
 }
+
+
 
 fn print_providers(config: &config::Config, term: &terminal::TerminalState) {
     for provider in &config.providers {

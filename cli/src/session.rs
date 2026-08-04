@@ -1,4 +1,5 @@
-use crate::config;
+use crate::config::{self, Config};
+use crate::meter::{self, ContextMeter};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -11,7 +12,19 @@ pub struct Session {
     pub workspace: String,
     pub created_at: u64,
     pub updated_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     pub messages: Vec<Value>,
+    #[serde(default)]
+    pub total_prompt_tokens: u64,
+    #[serde(default)]
+    pub total_completion_tokens: u64,
+    #[serde(default)]
+    pub last_prompt_tokens: u64,
+    #[serde(default)]
+    pub last_completion_tokens: u64,
+    #[serde(default)]
+    pub compact_count: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -19,6 +32,7 @@ pub struct SessionSummary {
     pub id: String,
     pub updated_at: u64,
     pub messages: usize,
+    pub title: Option<String>,
 }
 
 impl Session {
@@ -37,8 +51,69 @@ impl Session {
             workspace: canonical_workspace(workspace)?,
             created_at: now,
             updated_at: now,
+            title: None,
             messages: Vec::new(),
+            total_prompt_tokens: 0,
+            total_completion_tokens: 0,
+            last_prompt_tokens: 0,
+            last_completion_tokens: 0,
+            compact_count: 0,
         })
+    }
+
+    pub fn meter(&self, config: &Config) -> ContextMeter {
+        meter::meter_for(
+            &self.messages,
+            config,
+            self.total_prompt_tokens,
+            self.total_completion_tokens,
+            self.last_prompt_tokens,
+            self.last_completion_tokens,
+            self.compact_count,
+        )
+    }
+
+    pub fn record_usage(&mut self, prompt: u64, completion: u64) {
+        self.last_prompt_tokens = prompt;
+        self.last_completion_tokens = completion;
+        self.total_prompt_tokens = self.total_prompt_tokens.saturating_add(prompt);
+        self.total_completion_tokens = self.total_completion_tokens.saturating_add(completion);
+    }
+
+    /// Compact older turns when thresholds trip (or when forced).
+    pub fn compact(&mut self, config: &Config, force: bool) -> Option<String> {
+        let snapshot = self.meter(config);
+        if !force
+            && !snapshot.needs_compact(config.auto_compact, config.keep_recent_messages)
+        {
+            return None;
+        }
+        let note = meter::compact_messages(
+            &mut self.messages,
+            config.keep_recent_messages,
+            force,
+        )?;
+        if note.starts_with("Nothing to compact") {
+            return Some(note);
+        }
+        self.compact_count = self.compact_count.saturating_add(1);
+        Some(note)
+    }
+
+    /// Capture a short title from the first user turn when none is set yet.
+    pub fn ensure_title(&mut self, query: &str) {
+        if self.title.is_some() {
+            return;
+        }
+        let compact = query.split_whitespace().collect::<Vec<_>>().join(" ");
+        if compact.is_empty() {
+            return;
+        }
+        let mut title: String = compact.chars().take(72).collect();
+        if compact.chars().count() > 72 {
+            title.push('…');
+        }
+        self.title = Some(title);
     }
 
     pub fn save(&mut self) -> Result<PathBuf> {
@@ -96,6 +171,69 @@ impl Session {
         let workspace = canonical_workspace(&std::env::current_dir()?)?;
         list_from(&config::sessions_dir(), &workspace)
     }
+
+    /// Export the session as a readable Markdown transcript.
+    pub fn export_markdown(&self, path: &Path) -> Result<PathBuf> {
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).with_context(|| {
+                    format!("Could not create export directory: {}", parent.display())
+                })?;
+            }
+        }
+        let mut body = String::new();
+        body.push_str("# g0d session export\n\n");
+        body.push_str(&format!("- **id**: `{}`\n", self.id));
+        body.push_str(&format!("- **workspace**: `{}`\n", self.workspace));
+        if let Some(title) = &self.title {
+            body.push_str(&format!("- **title**: {title}\n"));
+        }
+        body.push_str(&format!("- **created_at**: {}\n", self.created_at));
+        body.push_str(&format!("- **updated_at**: {}\n", self.updated_at));
+        body.push_str(&format!("- **messages**: {}\n\n", self.messages.len()));
+        body.push_str("---\n\n");
+        for (index, message) in self.messages.iter().enumerate() {
+            let role = message
+                .get("role")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let content = message
+                .get("content")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim();
+            body.push_str(&format!("## {}. {role}\n\n", index + 1));
+            if content.is_empty() {
+                body.push_str("_(empty)_\n\n");
+            } else {
+                body.push_str(content);
+                body.push_str("\n\n");
+            }
+        }
+        std::fs::write(path, body)
+            .with_context(|| format!("Could not write export: {}", path.display()))?;
+        Ok(path.to_path_buf())
+    }
+
+    pub fn default_export_path(&self) -> PathBuf {
+        let slug = self
+            .title
+            .as_deref()
+            .unwrap_or("session")
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() {
+                    c.to_ascii_lowercase()
+                } else {
+                    '-'
+                }
+            })
+            .collect::<String>();
+        let slug = slug.trim_matches('-');
+        let slug = if slug.is_empty() { "session" } else { slug };
+        let short_id: String = self.id.chars().take(8).collect();
+        PathBuf::from(format!("g0d-{slug}-{short_id}.md"))
+    }
 }
 
 fn list_from(directory: &Path, workspace: &str) -> Result<Vec<SessionSummary>> {
@@ -119,6 +257,7 @@ fn list_from(directory: &Path, workspace: &str) -> Result<Vec<SessionSummary>> {
                 id: session.id,
                 updated_at: session.updated_at,
                 messages: session.messages.len(),
+                title: session.title,
             });
         }
     }
@@ -178,6 +317,57 @@ mod tests {
     #[test]
     fn blocks_session_id_traversal() {
         assert!(validate_id("../other").is_err());
+    }
+
+    #[test]
+    fn default_export_path_is_safe() {
+        let session = Session {
+            id: "abcd1234-session".into(),
+            workspace: "E:/tmp".into(),
+            created_at: 1,
+            updated_at: 1,
+            title: Some("Fix auth bug!".into()),
+            messages: vec![],
+            total_prompt_tokens: 0,
+            total_completion_tokens: 0,
+            last_prompt_tokens: 0,
+            last_completion_tokens: 0,
+            compact_count: 0,
+        };
+        let path = session.default_export_path();
+        assert_eq!(
+            path.file_name().and_then(|n| n.to_str()),
+            Some("g0d-fix-auth-bug-abcd1234.md")
+        );
+    }
+
+    #[test]
+    fn exports_markdown_transcript() {
+        let dir = temp_dir("export");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("out.md");
+        let session = Session {
+            id: "export1".into(),
+            workspace: "E:/tmp".into(),
+            created_at: 1,
+            updated_at: 2,
+            title: Some("demo".into()),
+            messages: vec![
+                serde_json::json!({"role": "user", "content": "hello"}),
+                serde_json::json!({"role": "assistant", "content": "hi there"}),
+            ],
+            total_prompt_tokens: 0,
+            total_completion_tokens: 0,
+            last_prompt_tokens: 0,
+            last_completion_tokens: 0,
+            compact_count: 0,
+        };
+        session.export_markdown(&path).unwrap();
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains("# g0d session export"));
+        assert!(body.contains("hello"));
+        assert!(body.contains("hi there"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

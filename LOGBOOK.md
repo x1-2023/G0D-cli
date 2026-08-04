@@ -103,3 +103,99 @@ Status: completed for the requested scope.
 - When the bounded loop is exhausted, G0D performs one no-tool finalization request, prints and persists a selective checkpoint, and returns normally instead of discarding context with an error.
 - Verification: 20 unit tests passed and the optimized 1.9.2 release built successfully.
 - Mock-provider E2E forced all 20 iterations, verified a no-tool checkpoint response was printed, process exited successfully, and the checkpoint was present in the saved session JSON.
+
+### 2026-08-04 - v1.14.x ship: TUI queue, Shift+Tab approval, README + remote install
+
+Status: shipping to github.com/x1-2023/G0D-cli
+
+- TUI: message queue, Shift+Tab ask/always-approve, `/` slash menu, multi-line composer
+- `install-remote.ps1` + `scripts/publish-release.ps1` for `irm | iex`
+- README rewritten for install/update; ROADMAP.md for next work
+- Binaries no longer intended in git (`g0d.exe` via Releases)
+
+### 2026-08-04 - v1.13.0 Grok-style fullscreen TUI
+
+Status: completed and verified.
+
+UI (matches Grok Build shell chrome):
+
+- Default interactive mode is a ratatui fullscreen TUI:
+  - Header: `≡ branch path` · `TOKs / BUDGET | steps ✓`
+  - Chat: user `›` lines, `◆` tool activity, assistant text, thinking timer
+  - Rounded input with model · approval label
+  - Footer key hints (Esc/Ctrl-C/Enter)
+- Approval modal for mutating tools while the agent runs on a worker thread
+- Agent output abstracted via `EventSink` (`ConsoleSink` + `ChannelSink`)
+- `--classic` / `G0D_CLASSIC` restores the reedline REPL
+
+Verification: 27 unit tests passed; release `g0d 1.13.0`.
+
+### 2026-08-04 - v1.12.0 context meter, tokens, auto-compact
+
+Status: completed and verified.
+
+UI / context:
+
+- Prompt right side shows live meter: `messages · ~est tokens · %`.
+- `/context` and `/status` show a bar, estimated tokens vs budget, last + lifetime API usage, compact count.
+- Spinner labels show `step i/n`.
+
+Token tracking:
+
+- Session stores last and lifetime prompt/completion tokens when the provider returns `usage`.
+- Post-turn footer prints turn usage + context estimate.
+
+Auto-compact:
+
+- New `meter` module: token estimate heuristic, bar render, rule-based compaction (summary of older turns + keep recent).
+- Config: `auto_compact`, `context_token_budget`, `keep_recent_messages`.
+- Runs automatically before agent queries when message cap or ~85% token budget is hit.
+- Manual `/compact` (force by default, `/compact auto` respects thresholds only).
+
+Verification: 27 unit tests passed; release `g0d 1.12.0`.
+
+### 2026-08-04 - v1.11.0 project memory + git + export
+
+Status: completed and verified.
+
+Improvements:
+
+- Auto-load project instructions (`AGENTS.md` / `G0D.md` / `.g0d/*` / `CLAUDE.md`) into agent context; `/instructions` to inspect.
+- New tools: `rename_file`, `git_add`, `git_commit` (no push/amend/skip-hooks; message via stdin `-F -`).
+- Tool registry now 16 curated tools.
+- Stop after 3 identical consecutive tool `ERROR:` observations and emit a checkpoint.
+- `/export [path]` writes a Markdown session transcript; default path is workspace-safe.
+- `/approval session on|off|clear` and `/steps [n|clear]` for process-local overrides; CLI `--steps N`.
+- Banner/status show whether project instructions were loaded.
+
+Verification:
+
+- `cargo test --bins`: 24 passed, 0 failed.
+- Release build reports `g0d 1.11.0`.
+
+### 2026-08-04 - v1.10.0 coding-agent completeness pass
+
+Status: completed and verified.
+
+Improvements:
+
+- Tool set expanded from 10 → 13: `glob_files`, `write_file` (create/overwrite), `delete_file`, plus `replace_all` on `replace_in_file`.
+- Sessions gain optional titles from the first user turn; `/session` and `/sessions` display them.
+- Crash-safe progress snapshots after each tool batch; final answer still replaces the provisional snapshot.
+- Token usage summary when providers return `usage` fields.
+- Configurable `max_agent_steps` (default 20, range 1–50) in config.toml.
+- Root `build.ps1` for release/test/install from one entrypoint.
+- Agent tool logs show short argument previews (`→ write_file (src/main.rs)`).
+- System prompt updated for the fuller tool surface.
+
+Verification:
+
+- `cargo test --bins`: 21 passed, 0 failed.
+- `build.ps1 -Release`: produced `cli\target\release\g0d.exe` and root `g0d.exe` reporting `g0d 1.10.0`.
+
+Remaining limitations:
+
+- Approval is still a policy gate, not an OS sandbox.
+- Glob matcher is intentional and lightweight (`*`, `**`, `?`); not full gitignore semantics.
+- Progress snapshots store summaries of tool observations, not full multi-turn tool transcripts.
+- Streaming is still used only for non-agent chat/parseltongue paths; the agent loop is non-streamed tool-calling.

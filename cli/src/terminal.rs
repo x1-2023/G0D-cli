@@ -1,5 +1,6 @@
 use std::io::IsTerminal;
 
+#[derive(Clone, Copy, Debug)]
 pub struct TerminalState {
     pub colors: bool,
     pub is_tty: bool,

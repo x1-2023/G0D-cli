@@ -1,7 +1,14 @@
 # Rust build output and isolated verification builds
 /cli/target/
 /.verify-target/
+/dist/
+
+# Built binaries (distribute via GitHub Releases, not git)
+/g0d.exe
+/god3.exe
+*.pdb
 
 # Local scratch files
 *.tmp
 *.log
+.DS_Store

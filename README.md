@@ -1,128 +1,225 @@
 # G0D CLI
 
-`g0d` is a Rust-based, multi-provider coding agent with a Codex-style interactive terminal experience.
+**g0d** — multi-provider coding agent for Windows, with a **Grok-style fullscreen TUI**.
 
-## Highlights
+Repo: [github.com/x1-2023/G0D-cli](https://github.com/x1-2023/G0D-cli)
 
-- Agentic chat with an OpenAI-compatible function-calling loop
-- Workspace-scoped file inspection/editing, bounded command/test execution, Git inspection, and unified patch tools
-- Approval mode defaults to `on`: every command or write asks `[y/N]`; `--approval off` enables automatic execution
-- Path traversal, absolute paths, `.git`, and `.env` writes are blocked
-- Persistent input history and `Ctrl-R` search
-- Slash-command and argument completion with `Tab`
-- Command aliases and typo suggestions
-- Workspace-scoped sessions persist across terminals; use `--resume`, `/resume`, or `/new`
-- Project context (working directory, project type, Git branch/status)
-- Provider/model configuration with OpenRouter, Venice, xAI, Ollama, and LM Studio defaults
-- Animated request status in a TTY and clean status messages in headless mode
-- GODMODE, Parseltongue, and ULTRAPLINIAN modes from the existing `grok-build` crates
-- TTY-safe colors plus `NO_COLOR`, `--no-color`, and `--headless`
+| | |
+| --- | --- |
+| Version | **1.14.1** |
+| Platforms | Windows x64 (primary) |
+| License | See repo root |
 
-## Build
+---
+
+## Install / update (one line)
 
 ```powershell
-cd E:\LastWar-Multibox\G0D-cli\cli
-cargo build --release
+irm https://raw.githubusercontent.com/x1-2023/G0D-cli/main/install-remote.ps1 | iex
 ```
 
-Local end-to-end smoke test (no real API key): start `python .\tests\mock_openai.py`, then run the release binary with `--provider lmstudio --model mock "ping"` from another terminal.
+This downloads the **latest GitHub Release** asset `g0d-windows-x64.exe`, installs to:
 
-The binary is written to `cli\target\release\g0d.exe`.
-
-## Install on Windows
-
-```powershell
-cd E:\LastWar-Multibox\G0D-cli
-powershell -ExecutionPolicy Bypass -File .\install.ps1
+```text
+%LOCALAPPDATA%\Programs\g0d\g0d.exe
 ```
 
-Open a new terminal after installation. From any project directory, run `g0d`. To remove the user-level installation, run `.\uninstall.ps1`.
+and adds a PATH shim (including `%APPDATA%\npm\g0d.cmd` for CMD discovery).
 
-## Configure
-
-Environment variables are recommended so secrets do not need to be stored in the config file:
+Open a **new terminal**, then:
 
 ```powershell
+g0d --version
+g0d
+```
+
+### Pin a version
+
+```powershell
+$script = Join-Path $env:TEMP 'g0d-install-remote.ps1'
+Invoke-WebRequest https://raw.githubusercontent.com/x1-2023/G0D-cli/main/install-remote.ps1 -OutFile $script
+powershell -ExecutionPolicy Bypass -File $script -Tag v1.14.1
+```
+
+### Uninstall binary only
+
+```powershell
+irm https://raw.githubusercontent.com/x1-2023/G0D-cli/main/uninstall.ps1 | iex
+```
+
+Or from a clone: `.\uninstall.ps1`
+
+### What survives an upgrade?
+
+| Data | Path | Upgrade / reinstall |
+| --- | --- | --- |
+| Binary | `%LOCALAPPDATA%\Programs\g0d\` | Replaced |
+| Config + keys | `%APPDATA%\g0d\config.toml` | **Kept** |
+| Sessions | `%APPDATA%\g0d\sessions\` | **Kept** |
+| History | `%LOCALAPPDATA%\g0d\history.txt` | **Kept** |
+
+Install/uninstall **never** delete sessions or config. Use `/resume latest` after updating.
+
+---
+
+## Quick start
+
+```powershell
+# API key (recommended: env var, not file)
 $env:OPENROUTER_API_KEY = "sk-or-v1-..."
-g0d --provider openrouter --model anthropic/claude-sonnet-4
-```
 
-To persist a key for the current provider:
-
-```powershell
+# Or persist for the active provider
 g0d --key sk-or-v1-...
+g0d --provider openrouter --model anthropic/claude-sonnet-4
+
+# Interactive TUI (default)
+cd E:\path\to\your-project
+g0d
+
+# One-shot agent
+g0d "inspect the auth flow, fix validation, run tests, show the diff"
 ```
 
-Use `g0d --config` to print the config path. Local OpenAI-compatible endpoints are available as `ollama` (`127.0.0.1:11434/v1`) and `lmstudio` (`127.0.0.1:1234/v1`).
+Local models: `ollama` (`127.0.0.1:11434/v1`), `lmstudio` (`127.0.0.1:1234/v1`).
 
-For portable installs and CI, set `G0D_CONFIG_DIR` to override both the config and history directory.
+---
 
-## Usage
+## Features
+
+- **Grok-style TUI** — header token meter, chat log, rounded input, footer shortcuts
+- **Coding agent** — list/glob/search/read, replace/create/write/delete/rename, patch, shell, git
+- **Approval** — `ask` vs `always-approve` (**Shift+Tab** toggles; `/approval` persists)
+- **Slash menu** — type `/` for command suggestions (Tab / ↑↓ / Enter)
+- **Message queue** — type while agent runs; **Enter** queues, **Ctrl+Enter** priority
+- **Sessions** — workspace-scoped, titled, crash-safe snapshots, `/resume`, `/export`
+- **Context** — auto-compact, `/context` meter, token usage when API reports it
+- **Project memory** — `AGENTS.md` / `G0D.md` / `.g0d/instructions.md`
+- **Providers** — OpenRouter, Venice, xAI/Grok, Ollama, LM Studio (+ custom)
+- **Classic REPL** — `g0d --classic` (reedline + Tab complete)
+
+---
+
+## TUI keybindings
+
+| Key | Action |
+| --- | --- |
+| `/` | Open slash command menu |
+| **Tab** / **↑↓** | Browse suggestions |
+| **Enter** | Pick suggestion · send prompt · **queue** if agent busy |
+| **Ctrl+Enter** | Send now / queue as **next** |
+| **Alt+Enter** | Newline in composer |
+| **Shift+Tab** | Toggle **ask** ↔ **always-approve** |
+| **Esc** | Close menu · clear input · clear queue |
+| **Ctrl+C** | Quit |
+
+---
+
+## Slash commands
+
+| Command | Purpose |
+| --- | --- |
+| `/help` | Commands + keys |
+| `/status` | Provider, model, approval, context |
+| `/key <api-key>` | Save key for active provider |
+| `/model [id]` | Show / set model |
+| `/provider …` | `list` · `default` · `add` · `remove` · `key` |
+| `/providers` | List providers |
+| `/config [show\|path]` | Config summary or path |
+| `/context` | Context meter + project context |
+| `/compact [force\|auto]` | Compact older turns |
+| `/instructions` | Show loaded project instructions |
+| `/language <auto\|vi\|en>` | Reply language |
+| `/approval [on\|off\|session …]` | Approval policy |
+| `/steps [n\|clear]` | Agent step budget |
+| `/session` `/sessions` `/resume` | Session management |
+| `/export [path.md]` | Export transcript |
+| `/chat` `/godmode` `/snake` `/ultra` | Agent mode labels |
+| `/new` `/clear` `/exit` | Session / UI |
+
+---
+
+## CLI usage
 
 ```text
 g0d [OPTIONS] [QUERY]
 
-g0d                              Interactive REPL
-g0d "inspect and fix this bug"   One-shot coding-agent task
-g0d -g "review this design"      GODMODE candidate race
-g0d -p "rewrite this prompt"     Parseltongue mode
-g0d -u --tier fast "compare"     ULTRAPLINIAN race
-g0d --models                     List model tiers
-g0d --approval on               Ask before every command/write (default)
-g0d --approval off              Allow automatic command/write execution
-g0d --resume                    Resume latest session for this directory
-g0d --resume=<session-id>       Resume a specific session
-g0d --help                       Full CLI help
+g0d                         Grok-style TUI
+g0d --classic               Classic reedline REPL
+g0d "fix the bug"          One-shot agent
+g0d -g "review design"      GODMODE (CLI race)
+g0d -p "rewrite prompt"     Parseltongue
+g0d -u --tier fast "…"      ULTRAPLINIAN
+g0d --approval off          Persist auto-approve
+g0d --steps 30              Step budget (1–50)
+g0d --resume                Resume latest session
+g0d --provider openrouter --model …
+g0d --help
 ```
 
-Piped input is supported:
+Piped / headless:
 
 ```powershell
 Get-Content .\error.log | g0d --headless
 ```
 
-## Interactive commands
+---
 
-| Command | Purpose |
-| --- | --- |
-| `/help` | Show commands and keybindings |
-| `/status` | Show mode, provider, model, key source, config, and history |
-| `/key <key>` | Save a key for the active provider |
-| `/model [id]` | Show or change the model |
-| `/provider <action>` | List/add/remove/select providers or set a provider key |
-| `/config [show\|path]` | Show sanitized config or its path |
-| `/context` | Show the project context sent to the model |
-| `/language <auto\|vi\|en>` | Select response language |
-| `/chat`, `/godmode`, `/snake`, `/ultra [tier]` | Change mode |
-| `/approval [on\|off]` | Show or change command/write approval |
-| `/session`, `/sessions`, `/resume [id]` | Inspect and resume workspace sessions |
-| `/new` | Start and persist a fresh session |
-| `/history` | Print persistent input history |
-| `/clear` | Clear the terminal |
-| `/exit` | Exit |
+## Config (`%APPDATA%\g0d\config.toml`)
 
-Aliases such as `/m`, `/g`, `/u`, `/ps`, `/cfg`, and `/quit` are supported.
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `approval_mode` | `on` | `on` = ask, `off` = always-approve |
+| `max_agent_steps` | `20` | Model/tool turns per query (1–50) |
+| `max_context_messages` | `20` | Session message window |
+| `context_token_budget` | `80000` | Soft history token budget |
+| `auto_compact` | `true` | Compact when thresholds trip |
+| `keep_recent_messages` | `8` | Kept after compact |
 
-## Keybindings
+Override config root: `$env:G0D_CONFIG_DIR = "D:\portable\g0d-config"`.
 
-- `Tab`: open/advance completion
-- `Shift-Tab`: previous completion
-- `Ctrl-R`: searchable history menu
-- `Up` / `Down`: navigate history
-- `Ctrl-L`: clear screen
-- `Alt-Enter`: insert a newline
-- `Ctrl-C`: cancel the current input
-- `Ctrl-D`: exit
+Project instructions (first match): `AGENTS.md`, `G0D.md`, `.g0d/instructions.md`, `.g0d/AGENTS.md`, `CLAUDE.md`.
 
-Slash commands are intentionally excluded from the history file so keys entered with `/key` are not persisted there.
+---
 
-## Coding-agent behavior
+## Build from source
 
-Normal chat mode is agentic. The model can inspect the current working directory, edit files, apply unified patches, inspect Git, and execute commands/tests. Read-only tools run automatically. With approval mode on, commands and writes ask `[y/N]`; a non-interactive/headless process denies them. The loop stops after 10 model/tool steps, command runtime is capped at 120 seconds, and tool output is bounded.
-
-Run `g0d` from the repository you want it to work on:
+**Requirements:** Rust (stable), Windows.
 
 ```powershell
-cd E:\path\to\your-project
-g0d "inspect the auth flow, fix the validation, run tests, and show the diff"
+git clone https://github.com/x1-2023/G0D-cli.git
+cd G0D-cli
+powershell -ExecutionPolicy Bypass -File .\build.ps1 -Release -Test
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -SkipBuild
 ```
+
+Binary: `cli\target\release\g0d.exe`.
+
+### Maintainers — publish a release (feeds `irm | iex`)
+
+```powershell
+# needs: gh auth login, cargo
+powershell -ExecutionPolicy Bypass -File .\scripts\publish-release.ps1 -Publish
+```
+
+Creates GitHub Release with asset **`g0d-windows-x64.exe`**. Users then run the install one-liner above.
+
+---
+
+## Safety
+
+- Workspace-scoped paths only (no `..`, no absolute paths)
+- Blocks writes under `.git` and to `.env*`
+- Bounded steps, tool output, command timeout (120s)
+- Approval gate is **policy**, not an OS sandbox — keep **ask** for untrusted prompts
+
+---
+
+## Roadmap
+
+See [ROADMAP.md](./ROADMAP.md) for planned work (streaming agent, cancel mid-turn, full GODMODE race in TUI, Linux/macOS, etc.).
+
+---
+
+## License / notice
+
+Includes vendored `grok-build` crates used for GODMODE-related features. See `LICENSE`, `SECURITY.md`, and `grok-build/` notices.

@@ -10,7 +10,30 @@ pub struct Config {
     pub providers: Vec<ProviderEntry>,
     pub lang: String,
     pub max_context_messages: usize,
+    #[serde(default = "default_max_agent_steps")]
+    pub max_agent_steps: usize,
+    /// Soft estimated-token budget for session history (not the full model window).
+    #[serde(default = "default_context_token_budget")]
+    pub context_token_budget: usize,
+    /// When true, compact older turns before a query if message/token thresholds trip.
+    #[serde(default = "default_true")]
+    pub auto_compact: bool,
+    /// How many recent messages to keep after compaction (plus a summary pair).
+    #[serde(default = "default_keep_recent_messages")]
+    pub keep_recent_messages: usize,
     pub approval_mode: ApprovalMode,
+}
+
+fn default_max_agent_steps() -> usize {
+    20
+}
+
+fn default_context_token_budget() -> usize {
+    80_000
+}
+
+fn default_keep_recent_messages() -> usize {
+    8
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,6 +86,10 @@ impl Default for Config {
             providers: builtin_providers(),
             lang: "auto".into(),
             max_context_messages: 20,
+            max_agent_steps: default_max_agent_steps(),
+            context_token_budget: default_context_token_budget(),
+            auto_compact: true,
+            keep_recent_messages: default_keep_recent_messages(),
             approval_mode: ApprovalMode::On,
         }
     }
@@ -116,6 +143,18 @@ impl Config {
         }
         if !(2..=100).contains(&self.max_context_messages) {
             anyhow::bail!("max_context_messages must be between 2 and 100");
+        }
+        if !(1..=50).contains(&self.max_agent_steps) {
+            anyhow::bail!("max_agent_steps must be between 1 and 50");
+        }
+        if !(4_000..=500_000).contains(&self.context_token_budget) {
+            anyhow::bail!("context_token_budget must be between 4000 and 500000");
+        }
+        if !(2..=40).contains(&self.keep_recent_messages) {
+            anyhow::bail!("keep_recent_messages must be between 2 and 40");
+        }
+        if self.keep_recent_messages >= self.max_context_messages {
+            anyhow::bail!("keep_recent_messages must be less than max_context_messages");
         }
         Ok(())
     }

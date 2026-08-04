@@ -1,12 +1,22 @@
 use std::path::Path;
 use std::process::Command;
 
+const MAX_INSTRUCTIONS_CHARS: usize = 12_000;
+
 pub struct ProjectContext {
     pub cwd: String,
     pub project_type: String,
     pub git_branch: Option<String>,
     pub git_status: Option<String>,
     pub directory_tree: String,
+    /// First matching project instruction file, if any.
+    pub instructions: Option<ProjectInstructions>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ProjectInstructions {
+    pub source: String,
+    pub body: String,
 }
 
 pub fn read_context() -> ProjectContext {
@@ -18,6 +28,7 @@ pub fn read_context() -> ProjectContext {
     let git_branch = git_branch_name();
     let git_status = git_status_summary();
     let directory_tree = directory_tree_summary(&cwd);
+    let instructions = load_project_instructions(Path::new(&cwd));
 
     ProjectContext {
         cwd,
@@ -25,6 +36,7 @@ pub fn read_context() -> ProjectContext {
         git_branch,
         git_status,
         directory_tree,
+        instructions,
     }
 }
 
@@ -39,7 +51,73 @@ pub fn context_summary(ctx: &ProjectContext) -> String {
         s.push_str(&format!("Git status: {}\n", status));
     }
     s.push_str(&format!("Directory structure:\n{}\n", ctx.directory_tree));
+    if let Some(ref instructions) = ctx.instructions {
+        s.push_str(&format!(
+            "\nProject instructions (from {}):\n{}\n",
+            instructions.source, instructions.body
+        ));
+    }
     s
+}
+
+/// Load the first matching instruction file under the workspace root.
+pub fn load_project_instructions(root: &Path) -> Option<ProjectInstructions> {
+    const CANDIDATES: &[&str] = &[
+        "AGENTS.md",
+        "G0D.md",
+        ".g0d/instructions.md",
+        ".g0d/AGENTS.md",
+        "CLAUDE.md",
+    ];
+    for relative in CANDIDATES {
+        let path = root.join(relative);
+        if !path.is_file() {
+            continue;
+        }
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let body = truncate_chars(trimmed, MAX_INSTRUCTIONS_CHARS);
+        return Some(ProjectInstructions {
+            source: relative.to_string(),
+            body,
+        });
+    }
+    None
+}
+
+fn truncate_chars(value: &str, limit: usize) -> String {
+    if value.chars().count() <= limit {
+        return value.to_string();
+    }
+    let mut out: String = value.chars().take(limit).collect();
+    out.push_str("\n... [instructions truncated]");
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loads_first_matching_instructions_file() {
+        let root = std::env::temp_dir().join(format!(
+            "g0d-instructions-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".g0d")).unwrap();
+        std::fs::write(root.join("AGENTS.md"), " Prefer small diffs. ").unwrap();
+        std::fs::write(root.join("G0D.md"), " ignored ").unwrap();
+        let loaded = load_project_instructions(&root).unwrap();
+        assert_eq!(loaded.source, "AGENTS.md");
+        assert!(loaded.body.contains("small diffs"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
 
 fn detect_project_type(cwd: &str) -> String {

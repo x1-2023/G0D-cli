@@ -1,6 +1,6 @@
 [package]
 name = "g0d"
-version = "1.9.2"
+version = "1.14.1"
 edition = "2021"
 description = "g0d — G0DM0D3 multi-model coding agent CLI. Like grok but with OpenRouter, multi-provider, GODMODE."
 
@@ -17,6 +17,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 tracing = "0.1"
 tracing-subscriber = "0.3"
 crossterm = "0.28"
+ratatui = "0.29"
 reedline = "0.35"
 nu-ansi-term = "0.50"
 dirs = "5"

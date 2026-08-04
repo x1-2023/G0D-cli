@@ -93,8 +93,25 @@ pub fn registry() -> Vec<Command> {
         Command {
             name: "/context",
             aliases: &["/ctx"],
-            desc: "Show the project context sent to the model",
+            desc: "Show context window meter and project context",
             usage: "/context",
+            args: &[],
+        },
+        Command {
+            name: "/compact",
+            aliases: &[],
+            desc: "Compact older session turns into a summary",
+            usage: "/compact [force|auto]",
+            args: &[ArgHint {
+                desc: "mode",
+                completions: &["force", "auto"],
+            }],
+        },
+        Command {
+            name: "/instructions",
+            aliases: &["/inst"],
+            desc: "Show loaded project instruction files",
+            usage: "/instructions",
             args: &[],
         },
         Command {
@@ -149,10 +166,20 @@ pub fn registry() -> Vec<Command> {
             name: "/approval",
             aliases: &["/approve"],
             desc: "Ask before commands and writes",
-            usage: "/approval [on|off]",
+            usage: "/approval [on|off|session on|session off|session clear]",
             args: &[ArgHint {
                 desc: "approval mode",
-                completions: &["on", "off"],
+                completions: &["on", "off", "session"],
+            }],
+        },
+        Command {
+            name: "/steps",
+            aliases: &[],
+            desc: "Show or override agent step budget for this session",
+            usage: "/steps [1-50|clear]",
+            args: &[ArgHint {
+                desc: "steps",
+                completions: &["10", "20", "30", "clear"],
             }],
         },
         Command {
@@ -177,6 +204,16 @@ pub fn registry() -> Vec<Command> {
             args: &[ArgHint {
                 desc: "session",
                 completions: &["latest"],
+            }],
+        },
+        Command {
+            name: "/export",
+            aliases: &[],
+            desc: "Export the current session to Markdown",
+            usage: "/export [path.md]",
+            args: &[ArgHint {
+                desc: "path",
+                completions: &[],
             }],
         },
         Command {
@@ -228,6 +265,90 @@ pub fn suggestions(input: &str, limit: usize) -> Vec<&'static str> {
         .into_iter()
         .take(limit)
         .map(|(name, _)| name)
+        .collect()
+}
+
+/// Completion candidate shared by reedline and the Grok-style TUI.
+#[derive(Clone, Debug)]
+pub struct CompletionItem {
+    pub value: String,
+    pub description: String,
+    /// Byte offset in the input line where replacement starts.
+    pub replace_from: usize,
+}
+
+/// Completions for a slash command line at `cursor` (byte index).
+pub fn complete_line(line: &str, cursor: usize) -> Vec<CompletionItem> {
+    if cursor > line.len() || !line.is_char_boundary(cursor) {
+        return vec![];
+    }
+    let before = &line[..cursor];
+    if !before.starts_with('/') {
+        return vec![];
+    }
+
+    let token_start = before.rfind(' ').map_or(0, |index| index + 1);
+    let current = &before[token_start..];
+    let parts: Vec<&str> = before.split_whitespace().collect();
+    let commands = registry();
+
+    // Completing the command name itself (typing `/` alone lists every slash command).
+    if parts.len() <= 1 && !before.ends_with(' ') {
+        let mut items: Vec<CompletionItem> = commands
+            .iter()
+            .filter(|command| {
+                // Bare `/` → full menu; `/he` → prefix match on name or alias.
+                current == "/"
+                    || command.name.starts_with(current)
+                    || command
+                        .aliases
+                        .iter()
+                        .any(|alias| alias.starts_with(current))
+            })
+            .map(|command| CompletionItem {
+                value: command.name.to_string(),
+                description: command.desc.to_string(),
+                replace_from: 0,
+            })
+            .collect();
+        // Stable order matching the registry (help-first, not alphabetical).
+        if current != "/" && current.len() > 1 {
+            items.sort_by(|a, b| {
+                let a_exact = a.value == current;
+                let b_exact = b.value == current;
+                b_exact
+                    .cmp(&a_exact)
+                    .then_with(|| a.value.len().cmp(&b.value.len()))
+                    .then_with(|| a.value.cmp(&b.value))
+            });
+        }
+        return items;
+    }
+
+    let Some(command_name) = parts.first() else {
+        return vec![];
+    };
+    let Some(command) = commands.iter().find(|command| {
+        command.name == *command_name || command.aliases.contains(command_name)
+    }) else {
+        return vec![];
+    };
+    let arg_index = if before.ends_with(' ') {
+        parts.len() - 1
+    } else {
+        parts.len().saturating_sub(2)
+    };
+    let Some(arg) = command.args.get(arg_index) else {
+        return vec![];
+    };
+    arg.completions
+        .iter()
+        .filter(|value| value.starts_with(current))
+        .map(|value| CompletionItem {
+            value: (*value).to_string(),
+            description: arg.desc.to_string(),
+            replace_from: token_start,
+        })
         .collect()
 }
 
@@ -358,5 +479,29 @@ mod tests {
         let suggestions = completer.complete("/language v", 11);
         assert_eq!(suggestions[0].value, "vi");
         assert_eq!(suggestions[0].span, Span { start: 10, end: 11 });
+    }
+
+    #[test]
+    fn complete_line_suggests_compact_and_provider() {
+        let items = complete_line("/com", 4);
+        assert!(items.iter().any(|item| item.value == "/compact"));
+        let items = complete_line("/provider ", 10);
+        assert!(items.iter().any(|item| item.value == "list"));
+        let items = complete_line("/compact a", 10);
+        assert!(items.iter().any(|item| item.value == "auto"));
+    }
+
+    #[test]
+    fn bare_slash_lists_all_commands() {
+        let items = complete_line("/", 1);
+        assert!(
+            items.len() >= 10,
+            "expected full slash menu, got {}",
+            items.len()
+        );
+        assert!(items.iter().any(|item| item.value == "/help"));
+        assert!(items.iter().any(|item| item.value == "/compact"));
+        assert!(items.iter().any(|item| item.value == "/provider"));
+        assert!(items.iter().any(|item| item.value == "/key"));
     }
 }
