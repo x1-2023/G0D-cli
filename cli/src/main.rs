@@ -298,9 +298,9 @@ fn parse_cli_args(args: &[String]) -> Result<CliOptions> {
                 let value = required_value(args, index, "--steps")?;
                 let parsed: usize = value
                     .parse()
-                    .context("--steps must be an integer between 1 and 50")?;
-                if !(1..=50).contains(&parsed) {
-                    anyhow::bail!("--steps must be between 1 and 50");
+                    .context("--steps must be an integer between 1 and 100")?;
+                if !(1..=100).contains(&parsed) {
+                    anyhow::bail!("--steps must be between 1 and 100");
                 }
                 steps = Some(parsed);
             }
@@ -367,9 +367,9 @@ fn parse_cli_args(args: &[String]) -> Result<CliOptions> {
             value if value.starts_with("--steps=") => {
                 let parsed: usize = value[8..]
                     .parse()
-                    .context("--steps must be an integer between 1 and 50")?;
-                if !(1..=50).contains(&parsed) {
-                    anyhow::bail!("--steps must be between 1 and 50");
+                    .context("--steps must be an integer between 1 and 100")?;
+                if !(1..=100).contains(&parsed) {
+                    anyhow::bail!("--steps must be between 1 and 100");
                 }
                 steps = Some(parsed);
             }
@@ -796,9 +796,9 @@ async fn handle_slash(
                 } else {
                     let parsed: usize = value
                         .parse()
-                        .context("Usage: /steps <1-50|clear>")?;
-                    if !(1..=50).contains(&parsed) {
-                        anyhow::bail!("Steps must be between 1 and 50");
+                        .context("Usage: /steps <1-100|clear>")?;
+                    if !(1..=100).contains(&parsed) {
+                        anyhow::bail!("Steps must be between 1 and 100");
                     }
                     *steps_override = Some(parsed);
                 }
@@ -1360,7 +1360,7 @@ fn print_cli_help(term: &terminal::TerminalState) -> Result<()> {
     println!("\nUSAGE\n  g0d [OPTIONS] [QUERY]\n");
     println!("MODES\n  -g, --godmode        Race five candidates\n  -p, --snake          Parseltongue mode\n  -u, --ultra          ULTRAPLINIAN mode\n      --tier <TIER>     fast|standard|smart|power|ultra\n");
     println!("OPTIONS\n      --provider <ID>  Select and persist provider\n      --model <ID>     Select and persist model\n      --endpoint <URL> One-shot base URL override (third-party, not saved)\n  -k, --key <KEY>      Save key for active provider\n      --language <LANG> auto|vi|en\n      --models         List model tiers\n      --config         Print config path\n      --headless       Disable interactive terminal behavior\n      --classic        Classic reedline REPL instead of Grok-style TUI\n      --no-color       Disable ANSI color\n  -h, --help           Show help\n  -V, --version        Show version\n");
-    println!("AGENT\n      --approval MODE  Persist on (ask) or off (automatic)\n      --steps N        Override max agent steps for this process (1-50)\n      --resume[=ID]    Resume latest or a workspace session\n");
+    println!("AGENT\n      --approval MODE  Persist on (ask) or off (automatic)\n      --steps N        Override max agent steps for this process (1-100)\n      --resume[=ID]    Resume latest or a workspace session\n");
     println!("TOOLS\n  list/glob/search/read · replace/create/write/delete/rename · apply_patch · run_command · git status/diff/log/add/commit\n");
     println!(
         "With no query, g0d opens the Grok-style TUI (use --classic for the old REPL). Piped stdin is accepted in non-TTY mode."

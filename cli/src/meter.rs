@@ -116,17 +116,30 @@ pub fn render_bar(ratio: f32, width: usize) -> String {
 }
 
 pub fn format_token_count(tokens: usize) -> String {
-    if tokens >= 10_000 {
-        format!("{:.1}k", tokens as f64 / 1000.0)
-    } else if tokens >= 1000 {
+    if tokens >= 1000 {
         format!("{:.1}k", tokens as f64 / 1000.0)
     } else {
         format!("{tokens}")
     }
 }
 
+/// Human-readable duration for compact/agent footers (e.g. `14.0s`, `2m23s`).
+pub fn format_duration(elapsed: std::time::Duration) -> String {
+    let total_ms = elapsed.as_millis();
+    if total_ms < 1000 {
+        format!("{:.1}s", elapsed.as_secs_f64().max(0.1))
+    } else if total_ms < 60_000 {
+        format!("{:.1}s", elapsed.as_secs_f64())
+    } else {
+        let secs = elapsed.as_secs();
+        let minutes = secs / 60;
+        let rem = secs % 60;
+        format!("{minutes}m{rem:02}s")
+    }
+}
+
 /// Collapse older messages into a single prior-context block, keeping the most recent turns.
-/// Returns a human-readable note when compaction happened.
+/// Returns a human-readable note when compaction happened (Grok-style before→after).
 pub fn compact_messages(
     messages: &mut Vec<Value>,
     keep_recent: usize,
@@ -141,16 +154,18 @@ pub fn compact_messages(
         };
     }
 
+    let started = std::time::Instant::now();
+    let before = estimate_messages_tokens(messages);
     let split_at = messages.len() - keep_recent;
     let old: Vec<Value> = messages.drain(..split_at).collect();
     let removed = old.len();
     let summary = summarize_turns(&old);
-    let before_tokens = estimate_messages_tokens(&old);
+    let old_tokens = estimate_messages_tokens(&old);
     let summary_msg = format!(
         "[compacted prior context — {removed} messages, ~{} tokens estimated]\n\
          Retain only durable facts from this summary. Prefer re-reading files over inventing details.\n\n\
          {summary}",
-        format_token_count(before_tokens)
+        format_token_count(old_tokens)
     );
     messages.insert(
         0,
@@ -167,9 +182,11 @@ pub fn compact_messages(
         }),
     );
     let after = estimate_messages_tokens(messages);
+    let elapsed = format_duration(started.elapsed());
     Some(format!(
-        "Compacted {removed} older messages → summary + {keep_recent} recent (~{} est. tokens now).",
-        format_token_count(after)
+        "Context compacted: {} → {} tokens ({elapsed})",
+        format_token_count(before),
+        format_token_count(after),
     ))
 }
 
@@ -245,11 +262,24 @@ mod tests {
             json!({"role":"assistant","content":"done three"}),
         ];
         let note = compact_messages(&mut messages, 2, true).unwrap();
-        assert!(note.contains("Compacted"));
+        assert!(
+            note.starts_with("Context compacted:"),
+            "unexpected note: {note}"
+        );
+        assert!(note.contains('→') || note.contains("->") || note.contains("→"), "got: {note}");
+        assert!(note.contains("tokens"));
         assert_eq!(messages.len(), 4); // summary pair + 2 recent
         let first = messages[0].get("content").and_then(Value::as_str).unwrap();
         assert!(first.contains("compacted prior context"));
         assert!(first.contains("task one"));
+    }
+
+    #[test]
+    fn format_duration_human() {
+        let short = format_duration(std::time::Duration::from_millis(250));
+        assert!(short.ends_with('s') && short.starts_with('0'), "got {short}");
+        assert_eq!(format_duration(std::time::Duration::from_secs(14)), "14.0s");
+        assert_eq!(format_duration(std::time::Duration::from_secs(143)), "2m23s");
     }
 
     #[test]

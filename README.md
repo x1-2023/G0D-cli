@@ -199,7 +199,7 @@ g0d -g "review design"      GODMODE (CLI race)
 g0d -p "rewrite prompt"     Parseltongue
 g0d -u --tier fast "…"      ULTRAPLINIAN
 g0d --approval off          Persist auto-approve
-g0d --steps 30              Step budget (1–50)
+g0d --steps 60              Step budget (1–100)
 g0d --resume                Resume latest session
 g0d --provider openrouter --model …
 g0d --help
@@ -218,7 +218,7 @@ Get-Content .\error.log | g0d --headless
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `approval_mode` | `on` | `on` = ask, `off` = always-approve |
-| `max_agent_steps` | `20` | Model/tool turns per query (1–50) |
+| `max_agent_steps` | `40` | Model/tool turns per query (1–100); auto +10 once if still progressing |
 | `max_context_messages` | `20` | Session message window |
 | `context_token_budget` | `80000` | Soft history token budget |
 | `auto_compact` | `true` | Compact when thresholds trip |

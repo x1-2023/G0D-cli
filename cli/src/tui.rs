@@ -1026,9 +1026,9 @@ fn handle_slash_command(app: &mut App, text: &str) -> Result<()> {
                 if matches!(*value, "clear" | "reset" | "default") {
                     app.steps_override = None;
                 } else {
-                    let n: usize = value.parse().context("Usage: /steps <1-50|clear>")?;
-                    if !(1..=50).contains(&n) {
-                        anyhow::bail!("Steps must be 1-50");
+                    let n: usize = value.parse().context("Usage: /steps <1-100|clear>")?;
+                    if !(1..=100).contains(&n) {
+                        anyhow::bail!("Steps must be 1-100");
                     }
                     app.steps_override = Some(n);
                 }

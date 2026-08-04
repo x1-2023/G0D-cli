@@ -15,7 +15,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::time::timeout;
@@ -24,6 +24,10 @@ const MAX_TOOL_OUTPUT: usize = 40_000;
 const MAX_READ_LINES: usize = 500;
 const MAX_GLOB_MATCHES: usize = 200;
 const MAX_IDENTICAL_ERRORS: usize = 3;
+/// Hard ceiling for agent tool/model turns per user query.
+pub const MAX_AGENT_STEPS_CAP: usize = 100;
+/// One-shot extension when the budget is exhausted mid-progress.
+const STEP_AUTO_EXTEND: usize = 10;
 
 /// Optional per-run overrides for the agent loop.
 #[derive(Debug, Clone, Default)]
@@ -98,16 +102,18 @@ pub async fn run(
     }
 
     session.ensure_title(query);
+    let run_started = Instant::now();
     if let Some(note) = session.compact(config, false) {
         sink.emit(AgentEvent::Notice(note));
         let _ = session.save();
     }
     let workspace = Workspace::discover()?;
     let project = context::read_context();
-    let max_steps = options
+    let mut max_steps = options
         .max_steps
         .unwrap_or(config.max_agent_steps)
-        .clamp(1, 50);
+        .clamp(1, MAX_AGENT_STEPS_CAP);
+    let mut step_extended = false;
     let approval_mode = options.approval.unwrap_or(config.approval_mode);
     let language = match config.lang.as_str() {
         "vi" => "Reply in Vietnamese.",
@@ -155,19 +161,52 @@ pub async fn run(
     let mut last_error_sig: Option<String> = None;
     let mut identical_error_streak = 0usize;
     let mut stuck_on_errors = false;
-    for step in 0..max_steps {
+    let mut wrap_up_nudged = false;
+    let mut step: usize = 0;
+    loop {
+        if step >= max_steps {
+            // One automatic extension if we were still making tool progress (not stuck).
+            if !step_extended
+                && !stuck_on_errors
+                && !trace.is_empty()
+                && max_steps < MAX_AGENT_STEPS_CAP
+            {
+                let bonus = STEP_AUTO_EXTEND
+                    .min(MAX_AGENT_STEPS_CAP.saturating_sub(max_steps))
+                    .max(1);
+                max_steps += bonus;
+                step_extended = true;
+                sink.emit(AgentEvent::Notice(format!(
+                    "Step budget extended +{bonus} (now {max_steps}) to finish in-progress work. \
+                     /steps N or max_agent_steps in config for a higher default."
+                )));
+            } else {
+                break;
+            }
+        }
         if cancelled(&options) {
             sink.emit(AgentEvent::Cancelled);
             let note = "Cancelled by user.";
             finish_session(session, query, note, config.max_context_messages, &usage)?;
-            print_usage(config, &usage, session, sink);
+            print_usage(config, &usage, session, sink, run_started);
             return Ok(());
         }
-        let status_label = if step == 0 {
-            format!("Thinking · step 1/{max_steps}")
-        } else {
-            format!("Thinking · step {}/{max_steps}", step + 1)
-        };
+        // Soft wrap-up: on the last two budgeted steps, steer the model to finish.
+        if !wrap_up_nudged && step + 1 >= max_steps.saturating_sub(1) {
+            wrap_up_nudged = true;
+            messages.push(json!({
+                "role": "user",
+                "content": "Step budget is nearly exhausted. Prefer finishing now: only essential \
+                    tool calls if anything is incomplete, then give a clear final answer or a short \
+                    checkpoint of what remains. Do not start large new explorations."
+            }));
+            sink.emit(AgentEvent::Notice(format!(
+                "Soft wrap-up · step {}/{} — finishing soon.",
+                step + 1,
+                max_steps
+            )));
+        }
+        let status_label = format!("Thinking · step {}/{max_steps}", step + 1);
         sink.emit(AgentEvent::Status(status_label.clone()));
         let indicator = status::StatusIndicator::start(&status_label);
         let body = json!({
@@ -221,6 +260,7 @@ pub async fn run(
                         config,
                         &usage,
                         false,
+                        run_started,
                     )
                     .await?
                     {
@@ -229,6 +269,7 @@ pub async fn run(
                     if stuck_on_errors {
                         break;
                     }
+                    step += 1;
                     continue;
                 }
             }
@@ -243,7 +284,7 @@ pub async fn run(
                 sink.emit(AgentEvent::Cancelled);
                 let note = "Cancelled by user during stream.";
                 finish_session(session, query, note, config.max_context_messages, &usage)?;
-                print_usage(config, &usage, session, sink);
+                print_usage(config, &usage, session, sink, run_started);
                 return Ok(());
             }
             Err(err) => {
@@ -275,6 +316,7 @@ pub async fn run(
             config,
             &usage,
             streamed.streamed_content,
+            run_started,
         )
         .await?
         {
@@ -290,9 +332,10 @@ pub async fn run(
             sink.emit(AgentEvent::Cancelled);
             let note = "Cancelled by user.";
             finish_session(session, query, note, config.max_context_messages, &usage)?;
-            print_usage(config, &usage, session, sink);
+            print_usage(config, &usage, session, sink, run_started);
             return Ok(());
         }
+        step += 1;
     }
 
     let checkpoint_instruction = if stuck_on_errors {
@@ -351,11 +394,11 @@ pub async fn run(
         )
     });
     sink.emit(AgentEvent::Assistant(checkpoint.clone()));
-    sink.emit(AgentEvent::Warn(
-        "Checkpoint saved. Send 'tiếp tục' in this session to resume.".into(),
-    ));
+    sink.emit(AgentEvent::Warn(format!(
+        "Checkpoint saved after {max_steps} steps. Reply 'tiếp tục' to resume, or /steps N for a higher budget."
+    )));
     finish_session(session, query, &checkpoint, config.max_context_messages, &usage)?;
-    print_usage(config, &usage, session, sink);
+    print_usage(config, &usage, session, sink, run_started);
     Ok(())
 }
 
@@ -400,7 +443,13 @@ fn persist_progress_snapshot(session: &mut Session, query: &str, trace: &[String
     session.messages = original;
 }
 
-fn print_usage(config: &Config, usage: &TokenUsage, session: &Session, sink: &mut dyn EventSink) {
+fn print_usage(
+    config: &Config,
+    usage: &TokenUsage,
+    session: &Session,
+    sink: &mut dyn EventSink,
+    run_started: Instant,
+) {
     let meter = session.meter(config);
     let line = if usage.is_empty() {
         format!(
@@ -425,6 +474,10 @@ fn print_usage(config: &Config, usage: &TokenUsage, session: &Session, sink: &mu
         )
     };
     sink.emit(AgentEvent::Usage(line));
+    sink.emit(AgentEvent::Notice(format!(
+        "Worked for {}",
+        crate::meter::format_duration(run_started.elapsed())
+    )));
 }
 
 struct StreamedTurn {
@@ -458,6 +511,7 @@ async fn handle_assistant_message(
     config: &Config,
     usage: &TokenUsage,
     already_streamed_content: bool,
+    run_started: Instant,
 ) -> Result<bool> {
     let calls = message
         .get("tool_calls")
@@ -481,7 +535,7 @@ async fn handle_assistant_message(
             sink.emit(AgentEvent::AssistantDelta("\n".into()));
         }
         finish_session(session, query, answer, config.max_context_messages, usage)?;
-        print_usage(config, usage, session, sink);
+        print_usage(config, usage, session, sink, run_started);
         return Ok(true);
     }
 

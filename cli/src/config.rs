@@ -29,7 +29,7 @@ pub struct Config {
 }
 
 fn default_max_agent_steps() -> usize {
-    20
+    40
 }
 
 fn default_context_token_budget() -> usize {
@@ -169,8 +169,8 @@ impl Config {
         if !(2..=100).contains(&self.max_context_messages) {
             anyhow::bail!("max_context_messages must be between 2 and 100");
         }
-        if !(1..=50).contains(&self.max_agent_steps) {
-            anyhow::bail!("max_agent_steps must be between 1 and 50");
+        if !(1..=100).contains(&self.max_agent_steps) {
+            anyhow::bail!("max_agent_steps must be between 1 and 100");
         }
         if !(4_000..=500_000).contains(&self.context_token_budget) {
             anyhow::bail!("context_token_budget must be between 4000 and 500000");

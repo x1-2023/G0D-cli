@@ -179,7 +179,7 @@ pub fn registry() -> Vec<Command> {
             name: "/steps",
             aliases: &[],
             desc: "Show or override agent step budget for this session",
-            usage: "/steps [1-50|clear]",
+            usage: "/steps [1-100|clear]",
             args: &[ArgHint {
                 desc: "steps",
                 completions: &["10", "20", "30", "clear"],
